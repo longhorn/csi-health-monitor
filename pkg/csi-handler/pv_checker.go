@@ -48,18 +48,12 @@ type PVHealthConditionChecker struct {
 
 	metrics *metrics.Metrics
 
-	// supportGetVolumeHealth lets the list recovery path confirm an absence with one Get
-	// call instead of waiting for a second empty cycle.
-	supportGetVolumeHealth bool
-
-	// recoveryStateMu guards the three recovery maps below, mutated from the GetVolume
-	// workers and the ListVolumes goroutine.
+	// recoveryStateMu guards recovery state mutated from the GetVolume workers and the
+	// ListVolumes goroutine.
 	recoveryStateMu sync.Mutex
 	// knownUnhealthy tracks volume handles currently reported unhealthy; only these need
 	// clearing on recovery.
 	knownUnhealthy map[string]bool
-	// absentListCycles counts consecutive complete list cycles a volume has been absent.
-	absentListCycles map[string]int
 	// lastApplied is the per-PVC (namespace/name) no-op-suppression baseline.
 	//
 	// TODO: once pvc.Status.HealthStatus exists in k8s.io/api, read the
@@ -74,31 +68,28 @@ func NewPVHealthConditionChecker(
 	timeout time.Duration,
 	pvcLister corelisters.PersistentVolumeClaimLister,
 	pvLister corelisters.PersistentVolumeLister,
-	supportGetVolumeHealth bool,
 	healthMetrics *metrics.Metrics,
 ) *PVHealthConditionChecker {
 	return &PVHealthConditionChecker{
-		driverName:             name,
-		k8sClient:              kClient,
-		pvcLister:              pvcLister,
-		pvLister:               pvLister,
-		timeout:                timeout,
-		supportGetVolumeHealth: supportGetVolumeHealth,
-		csiPVHandler:           NewCSIPVHandler(conn),
-		metrics:                healthMetrics,
-		knownUnhealthy:         map[string]bool{},
-		absentListCycles:       map[string]int{},
-		lastApplied:            map[string][]v1.VolumeHealthCondition{},
+		driverName:     name,
+		k8sClient:      kClient,
+		pvcLister:      pvcLister,
+		pvLister:       pvLister,
+		timeout:        timeout,
+		csiPVHandler:   NewCSIPVHandler(conn),
+		metrics:        healthMetrics,
+		knownUnhealthy: map[string]bool{},
+		lastApplied:    map[string][]v1.VolumeHealthCondition{},
 	}
 }
 
-// A previously-unhealthy volume absent from a complete list cycle is recovered via the
-// two-cycle rule, or a single Get confirmation when GET_VOLUME_HEALTH is supported.
+// A previously-unhealthy volume absent from a complete list cycle is resolved with
+// ControllerGetVolumeHealth. The CSI spec requires Get when List is supported.
 func (checker *PVHealthConditionChecker) CheckControllerListVolumeHealth(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, checker.timeout)
 	defer cancel()
 
-	// A failed list RPC is not a recovery: leave stored conditions and absence counters
+	// A failed list RPC is not a recovery: leave stored conditions
 	// untouched and try again next cycle.
 	start := time.Now()
 	result, err := checker.csiPVHandler.ControllerListVolumeHealth(ctx)
@@ -158,28 +149,14 @@ func (checker *PVHealthConditionChecker) handleAbsentInListCycle(ctx context.Con
 		return nil
 	}
 
-	// With GET_VOLUME_HEALTH we can confirm recovery immediately with one authoritative call.
-	if checker.supportGetVolumeHealth {
-		start := time.Now()
-		health, err := checker.csiPVHandler.ControllerGetVolumeHealth(ctx, volumeHandle)
-		checker.observeProbe(metrics.MethodGet, start, err)
-		if err != nil {
-			// Failed RPC is not a recovery; wait for the next cycle.
-			return err
-		}
-		return checker.reconcileAndTrack(ctx, pvc, volumeHandle, health.Conditions)
+	start := time.Now()
+	health, err := checker.csiPVHandler.ControllerGetVolumeHealth(ctx, volumeHandle)
+	checker.observeProbe(metrics.MethodGet, start, err)
+	if err != nil {
+		// Failed RPC is not a recovery; wait for the next list cycle.
+		return err
 	}
-
-	// Otherwise require two consecutive complete cycles of absence before clearing.
-	checker.recoveryStateMu.Lock()
-	checker.absentListCycles[volumeHandle]++
-	absent := checker.absentListCycles[volumeHandle]
-	checker.recoveryStateMu.Unlock()
-
-	if absent >= 2 {
-		return checker.reconcileAndTrack(ctx, pvc, volumeHandle, nil)
-	}
-	return nil
+	return checker.reconcileAndTrack(ctx, pvc, volumeHandle, health.Conditions)
 }
 
 func (checker *PVHealthConditionChecker) GetVolumeHandle(pv *v1.PersistentVolume) (string, error) {
@@ -190,8 +167,8 @@ func (checker *PVHealthConditionChecker) GetVolumeHandle(pv *v1.PersistentVolume
 	return pv.Spec.CSI.VolumeHandle, nil
 }
 
-// In Get mode an empty health report clears the stored conditions immediately (no two-cycle
-// wait — the Get RPC is authoritative).
+// In Get mode an empty health report clears the stored conditions immediately; the Get
+// RPC is authoritative.
 func (checker *PVHealthConditionChecker) CheckControllerVolumeHealth(ctx context.Context, pv *v1.PersistentVolume) error {
 	if pv.Spec.CSI == nil || pv.Spec.CSI.Driver != checker.driverName {
 		return fmt.Errorf("csi source is nil or the volume is not managed by this checker/monitor")
@@ -257,7 +234,6 @@ func (checker *PVHealthConditionChecker) reconcileAndTrack(ctx context.Context, 
 		delete(checker.knownUnhealthy, volumeHandle)
 		delete(checker.lastApplied, pvcKey)
 	}
-	delete(checker.absentListCycles, volumeHandle)
 
 	checker.updateVolumeHealthGauge(pvc.Namespace, pvc.Name, desired)
 	return nil

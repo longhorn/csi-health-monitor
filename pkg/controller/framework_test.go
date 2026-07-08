@@ -84,7 +84,6 @@ func runTest(t *testing.T, tc *testCase) {
 		NodeWorkerExecuteInterval: 1 * time.Minute,
 		NodeListAndAddInterval:    5 * time.Minute,
 		SupportListVolumeHealth:   tc.supportListVolumeHealth,
-		SupportGetVolumeHealth:    !tc.supportListVolumeHealth,
 	}
 
 	_, _, _, controllerServer, _, csiConn, err := mock.CreateMockServer(t)

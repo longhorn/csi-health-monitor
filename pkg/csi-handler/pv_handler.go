@@ -44,7 +44,7 @@ type VolumeHealthResult struct {
 }
 
 // A volume absent from the returned map was not reported in this list cycle (distinct from
-// present-but-empty, which means healthy); the caller's two-cycle recovery logic handles it.
+// present-but-empty, which means healthy); the caller can resolve absence with ControllerGetVolumeHealth.
 func (handler *csiPVHandler) ControllerListVolumeHealth(ctx context.Context) (map[string]*VolumeHealthResult, error) {
 	p := map[string]*VolumeHealthResult{}
 

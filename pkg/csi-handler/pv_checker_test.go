@@ -31,7 +31,7 @@ type MockPVHealthConditionChecker struct {
 	csiNodeServer            *driver.MockNodeServer
 }
 
-func createMockPVHealthConditionChecker(t *testing.T, supportGetVolumeHealth bool) *MockPVHealthConditionChecker {
+func createMockPVHealthConditionChecker(t *testing.T) *MockPVHealthConditionChecker {
 	k8sClient, informer := mock.FakeK8s()
 	_, _, _, controllerServer, nodeServer, csiConn, err := mock.CreateMockServer(t)
 	if err != nil {
@@ -41,16 +41,14 @@ func createMockPVHealthConditionChecker(t *testing.T, supportGetVolumeHealth boo
 	handler := NewCSIPVHandler(csiConn)
 	return &MockPVHealthConditionChecker{
 		pvHealthConditionChecker: &PVHealthConditionChecker{
-			driverName:             mock.DriverName,
-			timeout:                15 * time.Second,
-			k8sClient:              k8sClient,
-			pvcLister:              informer.Core().V1().PersistentVolumeClaims().Lister(),
-			pvLister:               informer.Core().V1().PersistentVolumes().Lister(),
-			csiPVHandler:           handler,
-			supportGetVolumeHealth: supportGetVolumeHealth,
-			knownUnhealthy:         map[string]bool{},
-			absentListCycles:       map[string]int{},
-			lastApplied:            map[string][]v1.VolumeHealthCondition{},
+			driverName:     mock.DriverName,
+			timeout:        15 * time.Second,
+			k8sClient:      k8sClient,
+			pvcLister:      informer.Core().V1().PersistentVolumeClaims().Lister(),
+			pvLister:       informer.Core().V1().PersistentVolumes().Lister(),
+			csiPVHandler:   handler,
+			knownUnhealthy: map[string]bool{},
+			lastApplied:    map[string][]v1.VolumeHealthCondition{},
 		},
 		pvcInformer:         informer.Core().V1().PersistentVolumeClaims(),
 		pvInformer:          informer.Core().V1().PersistentVolumes(),
@@ -133,7 +131,7 @@ func TestPVHealthConditionChecker_CheckControllerListVolumeHealth(t *testing.T) 
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			checker := createMockPVHealthConditionChecker(t, false)
+			checker := createMockPVHealthConditionChecker(t)
 			if err := checker.pvInformer.Informer().GetStore().Add(tt.pv); err != nil {
 				t.Fatal(err)
 			}
@@ -160,45 +158,9 @@ func TestPVHealthConditionChecker_CheckControllerListVolumeHealth(t *testing.T) 
 	}
 }
 
-func Test_TwoCycleListRecovery(t *testing.T) {
+func Test_ListRecoveryUsesGetForMissingUnhealthyVolume(t *testing.T) {
 	assert := assert.New(t)
-	checker := createMockPVHealthConditionChecker(t, false)
-
-	pv := mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "1", "uid", &mock.FSVolumeMode, v1.VolumeBound)
-	pvc := mock.CreatePVC(1, 2, "pvc", "uid", mock.DefaultNS, "pv", v1.ClaimBound)
-	assert.Nil(checker.pvInformer.Informer().GetStore().Add(pv))
-	checker.seedPVC(t, pvc)
-
-	_, ctx := ktesting.NewTestContext(t)
-
-	// Cycle 1: volume is abnormal -> patched abnormal, tracked unhealthy.
-	abnormalOut := &csi.ControllerListVolumeHealthResponse{Entries: []*csi.VolumeHealth{mock.AbnormalVolumeHealth("1")}}
-	checker.csiControllerServer.EXPECT().ControllerListVolumeHealth(gomock.Any(), gomock.Any()).Return(abnormalOut, nil).Times(1)
-	assert.Nil(checker.pvHealthConditionChecker.CheckControllerListVolumeHealth(ctx))
-	assert.True(checker.pvHealthConditionChecker.knownUnhealthy["1"])
-
-	// Cycle 2: volume absent from the list -> first absence, NOT yet cleared.
-	checker.fakeClient.ClearActions()
-	emptyOut := &csi.ControllerListVolumeHealthResponse{Entries: []*csi.VolumeHealth{}}
-	checker.csiControllerServer.EXPECT().ControllerListVolumeHealth(gomock.Any(), gomock.Any()).Return(emptyOut, nil).Times(1)
-	assert.Nil(checker.pvHealthConditionChecker.CheckControllerListVolumeHealth(ctx))
-	patched, _ := healthStatusPatched(checker.fakeClient.Actions())
-	assert.False(patched, "should not clear after a single absence")
-	assert.True(checker.pvHealthConditionChecker.knownUnhealthy["1"], "still tracked unhealthy after one absence")
-
-	// Cycle 3: volume absent again -> second consecutive absence -> cleared.
-	checker.fakeClient.ClearActions()
-	checker.csiControllerServer.EXPECT().ControllerListVolumeHealth(gomock.Any(), gomock.Any()).Return(emptyOut, nil).Times(1)
-	assert.Nil(checker.pvHealthConditionChecker.CheckControllerListVolumeHealth(ctx))
-	patched, abnormal := healthStatusPatched(checker.fakeClient.Actions())
-	assert.True(patched, "should clear after two consecutive absences")
-	assert.False(abnormal, "clearing patch must not carry conditions")
-	assert.False(checker.pvHealthConditionChecker.knownUnhealthy["1"], "no longer tracked unhealthy")
-}
-
-func Test_GetConfirmedRecovery(t *testing.T) {
-	assert := assert.New(t)
-	checker := createMockPVHealthConditionChecker(t, true)
+	checker := createMockPVHealthConditionChecker(t)
 
 	pv := mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "1", "uid", &mock.FSVolumeMode, v1.VolumeBound)
 	pvc := mock.CreatePVC(1, 2, "pvc", "uid", mock.DefaultNS, "pv", v1.ClaimBound)
@@ -230,7 +192,7 @@ func Test_GetConfirmedRecovery(t *testing.T) {
 
 func Test_FailedRPCIsNotRecovery(t *testing.T) {
 	assert := assert.New(t)
-	checker := createMockPVHealthConditionChecker(t, false)
+	checker := createMockPVHealthConditionChecker(t)
 
 	pv := mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "1", "uid", &mock.FSVolumeMode, v1.VolumeBound)
 	pvc := mock.CreatePVC(1, 2, "pvc", "uid", mock.DefaultNS, "pv", v1.ClaimBound)
@@ -259,7 +221,7 @@ func Test_FailedRPCIsNotRecovery(t *testing.T) {
 
 func Test_ConditionTransition(t *testing.T) {
 	assert := assert.New(t)
-	checker := createMockPVHealthConditionChecker(t, false)
+	checker := createMockPVHealthConditionChecker(t)
 
 	pv := mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "1", "uid", &mock.FSVolumeMode, v1.VolumeBound)
 	pvc := mock.CreatePVC(1, 2, "pvc", "uid", mock.DefaultNS, "pv", v1.ClaimBound)
@@ -313,7 +275,7 @@ func TestPVHealthConditionChecker_GetVolumeHandle(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			checker := createMockPVHealthConditionChecker(t, false)
+			checker := createMockPVHealthConditionChecker(t)
 			got, err := checker.pvHealthConditionChecker.GetVolumeHandle(tt.pv)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("GetVolumeHandle() error = %v, wantErr %v", err, tt.wantErr)
@@ -385,7 +347,7 @@ func TestPVHealthConditionChecker_CheckControllerVolumeHealth(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			checker := createMockPVHealthConditionChecker(t, false)
+			checker := createMockPVHealthConditionChecker(t)
 			if err := checker.pvInformer.Informer().GetStore().Add(tt.pv); err != nil {
 				t.Fatal(err)
 			}

@@ -203,7 +203,6 @@ func main() {
 		ContextTimeout:          *timeout,
 		EnableNodeWatcher:       *enableNodeWatcher,
 		SupportListVolumeHealth: supportListVolumeHealth,
-		SupportGetVolumeHealth:  supportGetVolumeHealth,
 
 		ListVolumesInterval:      *listVolumesInterval,
 		PVWorkerExecuteInterval:  *monitorInterval,

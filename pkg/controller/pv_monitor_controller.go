@@ -87,7 +87,6 @@ type PVMonitorOptions struct {
 	DriverName              string
 	EnableNodeWatcher       bool
 	SupportListVolumeHealth bool
-	SupportGetVolumeHealth  bool
 
 	ListVolumesInterval      time.Duration
 	PVWorkerExecuteInterval  time.Duration
@@ -161,7 +160,6 @@ func (ctrl *PVMonitorController) setupPVChecker(
 		option.ContextTimeout,
 		ctrl.pvcLister,
 		ctrl.pvLister,
-		option.SupportGetVolumeHealth,
 		healthMetrics,
 	)
 }
