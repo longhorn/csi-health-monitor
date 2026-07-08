@@ -49,7 +49,7 @@ type PVHealthConditionChecker struct {
 	metrics *metrics.Metrics
 
 	// recoveryStateMu guards recovery state mutated from the GetVolume workers and the
-	// ListVolumes goroutine.
+	// ControllerListVolumeHealth goroutine.
 	recoveryStateMu sync.Mutex
 	// knownUnhealthy tracks volume handles reported unhealthy during this process;
 	// PVC status covers unhealthy state that predates this process.

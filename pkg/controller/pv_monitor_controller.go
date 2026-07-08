@@ -59,7 +59,7 @@ type PVMonitorController struct {
 	// we get PVs from pvQueue to check their health conditions
 	pvQueue workqueue.Interface
 
-	// Time interval for calling ListVolumes RPC to check volumes' health condition
+	// Time interval for calling ControllerListVolumeHealth RPC to check volumes' health condition
 	ListVolumesInterval time.Duration
 	// Time interval for executing pv worker goroutines
 	PVWorkerExecuteInterval time.Duration
@@ -155,7 +155,7 @@ func (ctrl *PVMonitorController) Run(ctx context.Context, workers int, wg *sync.
 	// if the driver supports ControllerListVolumeHealth, it is preferred for performance reasons
 	if ctrl.supportListVolumeHealth {
 		goTrack(wg, func() {
-			wait.UntilWithContext(ctx, ctrl.checkPVsHealthConditionByListVolumes, ctrl.ListVolumesInterval)
+			wait.UntilWithContext(ctx, ctrl.checkPVsHealthConditionByListVolumeHealth, ctrl.ListVolumesInterval)
 		})
 		<-ctx.Done()
 		return
@@ -191,7 +191,7 @@ func waitForCacheSyncSucceed(ctx context.Context, ctrl *PVMonitorController) boo
 	return cache.WaitForCacheSync(ctx.Done(), ctrl.pvListerSynced, ctrl.pvcListerSynced)
 }
 
-func (ctrl *PVMonitorController) checkPVsHealthConditionByListVolumes(ctx context.Context) {
+func (ctrl *PVMonitorController) checkPVsHealthConditionByListVolumeHealth(ctx context.Context) {
 	logger := klog.FromContext(ctx)
 	err := ctrl.pvChecker.CheckControllerListVolumeHealth(ctx)
 	if err != nil {

@@ -91,7 +91,7 @@ Check `pvc.status.healthStatus` for controller-reported abnormal volume health w
 
 - `metrics-path`: The HTTP path where prometheus metrics will be exposed. Default is /metrics.
 
-- `worker-threads`: Number of worker threads for running volume checker when CSI Driver supports `ControllerGetVolume`, but not `ListVolumes`. The default value is 10.
+- `worker-threads`: Number of worker threads for running volume checker when CSI Driver supports `ControllerGetVolumeHealth`, but not `ControllerListVolumeHealth`. The default value is 10.
 
 ### Other recognized arguments
 
