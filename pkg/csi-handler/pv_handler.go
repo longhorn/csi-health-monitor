@@ -20,11 +20,11 @@ import (
 	"context"
 	"fmt"
 
+	v1 "k8s.io/api/core/v1"
+
 	"google.golang.org/grpc"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
-
-	"github.com/kubernetes-csi/external-health-monitor/pkg/apis/volumehealth"
 )
 
 var _ CSIHandler = &csiPVHandler{}
@@ -40,7 +40,7 @@ func NewCSIPVHandler(conn *grpc.ClientConn) CSIHandler {
 }
 
 type VolumeHealthResult struct {
-	Conditions []volumehealth.VolumeHealthCondition
+	Conditions []v1.VolumeHealthCondition
 }
 
 // A volume absent from the returned map was not reported in this list cycle (distinct from
@@ -92,7 +92,7 @@ func volumeHealthToResult(vh *csi.VolumeHealth) *VolumeHealthResult {
 		if entry == nil {
 			continue
 		}
-		result.Conditions = append(result.Conditions, volumehealth.VolumeHealthCondition{
+		result.Conditions = append(result.Conditions, v1.VolumeHealthCondition{
 			Status:  mapVolumeHealthErrorType(entry.GetStatus()),
 			Reason:  entry.GetReason(),
 			Message: entry.GetMessage(),
@@ -101,15 +101,15 @@ func volumeHealthToResult(vh *csi.VolumeHealth) *VolumeHealthResult {
 	return result
 }
 
-func mapVolumeHealthErrorType(t csi.VolumeHealthErrorType) volumehealth.VolumeHealthStatusType {
+func mapVolumeHealthErrorType(t csi.VolumeHealthErrorType) v1.VolumeHealthStatusType {
 	switch t {
 	case csi.VolumeHealthErrorType_INACCESSIBLE:
-		return volumehealth.VolumeHealthInaccessible
+		return v1.VolumeHealthInaccessible
 	case csi.VolumeHealthErrorType_DATA_LOSS:
-		return volumehealth.VolumeHealthDataLoss
+		return v1.VolumeHealthDataLoss
 	case csi.VolumeHealthErrorType_DEGRADED:
-		return volumehealth.VolumeHealthDegraded
+		return v1.VolumeHealthDegraded
 	default:
-		return volumehealth.VolumeHealthDegraded
+		return v1.VolumeHealthDegraded
 	}
 }

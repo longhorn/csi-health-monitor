@@ -16,12 +16,12 @@ import (
 	_ "k8s.io/klog/v2/ktesting/init"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
-	"github.com/golang/mock/gomock"
 	"github.com/kubernetes-csi/csi-test/v5/driver"
 	"github.com/kubernetes-csi/csi-test/v5/utils"
 	"github.com/kubernetes-csi/external-health-monitor/pkg/metrics"
 	"github.com/kubernetes-csi/external-health-monitor/pkg/mock"
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/mock/gomock"
 )
 
 type fakeNativeObjects struct {
@@ -49,7 +49,7 @@ func waitForHealthStatusPatch(client *fake.Clientset, timeout time.Duration) (se
 				continue
 			}
 			seen = true
-			if strings.Contains(string(patchAction.GetPatch()), "\"conditions\"") {
+			if strings.Contains(string(patchAction.GetPatch()), "\"healthConditions\"") {
 				abnormal = true
 			}
 			return seen, abnormal

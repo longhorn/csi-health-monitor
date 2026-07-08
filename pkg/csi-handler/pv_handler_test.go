@@ -5,11 +5,12 @@ import (
 	"reflect"
 	"testing"
 
+	v1 "k8s.io/api/core/v1"
+
 	"github.com/container-storage-interface/spec/lib/go/csi"
-	"github.com/golang/mock/gomock"
 	"github.com/kubernetes-csi/csi-test/v5/utils"
-	"github.com/kubernetes-csi/external-health-monitor/pkg/apis/volumehealth"
 	"github.com/kubernetes-csi/external-health-monitor/pkg/mock"
+	"go.uber.org/mock/gomock"
 )
 
 var (
@@ -48,9 +49,9 @@ var (
 		},
 	}
 
-	abnormalConditions = []volumehealth.VolumeHealthCondition{
+	abnormalConditions = []v1.VolumeHealthCondition{
 		{
-			Status:  volumehealth.VolumeHealthInaccessible,
+			Status:  v1.VolumeHealthInaccessible,
 			Reason:  "VolumeNotFound",
 			Message: "Volume not found",
 		},
@@ -163,13 +164,13 @@ func Test_mapVolumeHealthErrorType(t *testing.T) {
 	tests := []struct {
 		name string
 		in   csi.VolumeHealthErrorType
-		want volumehealth.VolumeHealthStatusType
+		want v1.VolumeHealthStatusType
 	}{
-		{"inaccessible", csi.VolumeHealthErrorType_INACCESSIBLE, volumehealth.VolumeHealthInaccessible},
-		{"dataloss", csi.VolumeHealthErrorType_DATA_LOSS, volumehealth.VolumeHealthDataLoss},
-		{"degraded", csi.VolumeHealthErrorType_DEGRADED, volumehealth.VolumeHealthDegraded},
+		{"inaccessible", csi.VolumeHealthErrorType_INACCESSIBLE, v1.VolumeHealthInaccessible},
+		{"dataloss", csi.VolumeHealthErrorType_DATA_LOSS, v1.VolumeHealthDataLoss},
+		{"degraded", csi.VolumeHealthErrorType_DEGRADED, v1.VolumeHealthDegraded},
 		// Unknown / future enum values must not be treated as healthy; they surface as Degraded.
-		{"unknown", csi.VolumeHealthErrorType_UNKNOWN_VOLUME_HEALTH_TYPE, volumehealth.VolumeHealthDegraded},
+		{"unknown", csi.VolumeHealthErrorType_UNKNOWN_VOLUME_HEALTH_TYPE, v1.VolumeHealthDegraded},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

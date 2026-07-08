@@ -70,6 +70,7 @@ var map_CSINode = map[string]string{
 	"":         "DEPRECATED - This group version of CSINode is deprecated by storage/v1/CSINode. See the release notes for more information. CSINode holds information about all CSI drivers installed on a node. CSI drivers do not need to create the CSINode object directly. As long as they use the node-driver-registrar sidecar container, the kubelet will automatically populate the CSINode object for the CSI driver as part of kubelet plugin registration. CSINode has the same name as a node. If the object is missing, it means either there are no CSI Drivers available on the node, or the Kubelet version is low enough that it doesn't create this object. CSINode has an OwnerReference that points to the corresponding node object.",
 	"metadata": "metadata.name must be the Kubernetes node name.",
 	"spec":     "spec is the specification of CSINode",
+	"status":   "status contains health and status information for the node's storage.",
 }
 
 func (CSINode) SwaggerDoc() map[string]string {
@@ -105,6 +106,15 @@ var map_CSINodeSpec = map[string]string{
 
 func (CSINodeSpec) SwaggerDoc() map[string]string {
 	return map_CSINodeSpec
+}
+
+var map_CSINodeStatus = map[string]string{
+	"":              "CSINodeStatus contains health and status information for storage on a node.",
+	"storageHealth": "storageHealth is the set of backend health reports for each CSI driver registered on the node.",
+}
+
+func (CSINodeStatus) SwaggerDoc() map[string]string {
+	return map_CSINodeStatus
 }
 
 var map_CSIStorageCapacity = map[string]string{
@@ -156,6 +166,21 @@ func (StorageClassList) SwaggerDoc() map[string]string {
 	return map_StorageClassList
 }
 
+var map_StorageHealthCondition = map[string]string{
+	"":                   "StorageHealthCondition represents an adverse health condition reported by a CSI driver for its storage backend on a node.",
+	"name":               "name is the CSI driver name, matching CSINodeDriver.name.",
+	"status":             "status is the health status category. One of \"StorageUnreachable\", \"StorageDegraded\".",
+	"reason":             "reason is a brief CamelCase machine-parseable reason. Together with name and status it forms the unique identity of a condition entry.",
+	"message":            "message is a human-readable description.",
+	"accessModes":        "accessModes are the access modes affected. An empty list means all access modes are affected.",
+	"volumeMode":         "volumeMode is the volume mode affected. Nil means both are affected.",
+	"lastTransitionTime": "lastTransitionTime is when this condition first appeared at its current state.",
+}
+
+func (StorageHealthCondition) SwaggerDoc() map[string]string {
+	return map_StorageHealthCondition
+}
+
 var map_TokenRequest = map[string]string{
 	"":                  "TokenRequest contains parameters of a service account token.",
 	"audience":          "audience is the intended audience of the token in \"TokenRequestSpec\". It will default to the audiences of kube apiserver.",
@@ -190,6 +215,7 @@ func (VolumeAttachmentList) SwaggerDoc() map[string]string {
 var map_VolumeAttachmentSource = map[string]string{
 	"":                     "VolumeAttachmentSource represents a volume that should be attached. Right now only PersistentVolumes can be attached via external attacher, in the future we may allow also inline volumes in pods. Exactly one member can be set.",
 	"persistentVolumeName": "persistentVolumeName represents the name of the persistent volume to attach.",
+	"inlineVolumeSpec":     "inlineVolumeSpec contains all the information necessary to attach a persistent volume defined by a pod's inline VolumeSource. This field is populated only for the CSIMigration feature. It contains translated fields from a pod's inline VolumeSource to a PersistentVolumeSpec. This field is beta-level and is only honored by servers that enabled the CSIMigration feature.",
 }
 
 func (VolumeAttachmentSource) SwaggerDoc() map[string]string {

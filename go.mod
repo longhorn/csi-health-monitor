@@ -4,7 +4,6 @@ go 1.26.0
 
 require (
 	github.com/container-storage-interface/spec v1.12.0
-	github.com/golang/mock v1.6.0
 	github.com/kubernetes-csi/csi-lib-utils v0.24.0
 	github.com/kubernetes-csi/csi-test/v5 v5.4.0
 	github.com/stretchr/testify v1.11.1
@@ -85,6 +84,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.43.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.10.0 // indirect
 	go.uber.org/automaxprocs v1.6.0 // indirect
+	go.uber.org/mock v0.6.0
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.28.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
@@ -113,3 +113,13 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.0 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
+
+replace github.com/container-storage-interface/spec => ../spec
+
+replace github.com/kubernetes-csi/csi-test/v5 => ../csi-test
+
+replace k8s.io/api => ../kubernetes/staging/src/k8s.io/api
+
+replace k8s.io/apimachinery => ../kubernetes/staging/src/k8s.io/apimachinery
+
+replace k8s.io/client-go => ../kubernetes/staging/src/k8s.io/client-go

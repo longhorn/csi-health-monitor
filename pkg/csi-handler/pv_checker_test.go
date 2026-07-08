@@ -13,12 +13,11 @@ import (
 	_ "k8s.io/klog/v2/ktesting/init"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
-	"github.com/golang/mock/gomock"
 	"github.com/kubernetes-csi/csi-test/v5/driver"
 	"github.com/kubernetes-csi/csi-test/v5/utils"
-	"github.com/kubernetes-csi/external-health-monitor/pkg/apis/volumehealth"
 	"github.com/kubernetes-csi/external-health-monitor/pkg/mock"
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/mock/gomock"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -51,7 +50,7 @@ func createMockPVHealthConditionChecker(t *testing.T, supportGetVolumeHealth boo
 			supportGetVolumeHealth: supportGetVolumeHealth,
 			knownUnhealthy:         map[string]bool{},
 			absentListCycles:       map[string]int{},
-			lastApplied:            map[string][]volumehealth.VolumeHealthCondition{},
+			lastApplied:            map[string][]v1.VolumeHealthCondition{},
 		},
 		pvcInformer:         informer.Core().V1().PersistentVolumeClaims(),
 		pvInformer:          informer.Core().V1().PersistentVolumes(),
@@ -86,7 +85,7 @@ func healthStatusPatched(actions []k8stesting.Action) (patched bool, abnormal bo
 		}
 		patched = true
 		body := string(patchAction.GetPatch())
-		if strings.Contains(body, "\"conditions\"") {
+		if strings.Contains(body, "\"healthConditions\"") {
 			abnormal = true
 		}
 	}
@@ -199,7 +198,7 @@ func Test_TwoCycleListRecovery(t *testing.T) {
 
 func Test_GetConfirmedRecovery(t *testing.T) {
 	assert := assert.New(t)
-	checker := createMockPVHealthConditionChecker(t, true) // supportGetVolumeHealth=true
+	checker := createMockPVHealthConditionChecker(t, true)
 
 	pv := mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "1", "uid", &mock.FSVolumeMode, v1.VolumeBound)
 	pvc := mock.CreatePVC(1, 2, "pvc", "uid", mock.DefaultNS, "pv", v1.ClaimBound)

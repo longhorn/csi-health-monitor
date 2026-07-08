@@ -10,18 +10,16 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-
-	"github.com/kubernetes-csi/external-health-monitor/pkg/apis/volumehealth"
 )
 
 const fieldManager = "csi-external-health-monitor-controller"
 
 // Called only when the condition set changed, so the transition time is always fresh.
-func buildHealthStatus(desired []volumehealth.VolumeHealthCondition) *volumehealth.VolumeHealthStatus {
+func buildHealthStatus(desired []v1.VolumeHealthCondition) *v1.VolumeHealthStatus {
 	now := metav1.Now()
-	return &volumehealth.VolumeHealthStatus{
-		Conditions:         desired,
-		LastTransitionTime: &now,
+	return &v1.VolumeHealthStatus{
+		HealthConditions:   desired,
+		LastTransitionTime: now,
 	}
 }
 
@@ -29,11 +27,11 @@ func buildHealthStatus(desired []volumehealth.VolumeHealthCondition) *volumeheal
 func (checker *PVHealthConditionChecker) patchPVCHealthStatus(
 	ctx context.Context,
 	pvc *v1.PersistentVolumeClaim,
-	status *volumehealth.VolumeHealthStatus,
+	status *v1.VolumeHealthStatus,
 ) error {
 	// A nil/empty status serializes to null, clearing the field server-side.
 	var healthValue interface{}
-	if status != nil && len(status.Conditions) > 0 {
+	if status != nil && len(status.HealthConditions) > 0 {
 		healthValue = status
 	}
 
@@ -62,11 +60,11 @@ func (checker *PVHealthConditionChecker) patchPVCHealthStatus(
 }
 
 // normalizeConditions returns a stable-sorted copy so equality comparison and patch output are deterministic.
-func normalizeConditions(in []volumehealth.VolumeHealthCondition) []volumehealth.VolumeHealthCondition {
+func normalizeConditions(in []v1.VolumeHealthCondition) []v1.VolumeHealthCondition {
 	if len(in) == 0 {
 		return nil
 	}
-	out := make([]volumehealth.VolumeHealthCondition, len(in))
+	out := make([]v1.VolumeHealthCondition, len(in))
 	copy(out, in)
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Status != out[j].Status {
@@ -79,6 +77,6 @@ func normalizeConditions(in []volumehealth.VolumeHealthCondition) []volumehealth
 
 // Compares status, reason, and message. A message-only change still triggers a patch.
 // Inputs must be normalized first.
-func conditionsEqual(a, b []volumehealth.VolumeHealthCondition) bool {
+func conditionsEqual(a, b []v1.VolumeHealthCondition) bool {
 	return reflect.DeepEqual(a, b)
 }

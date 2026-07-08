@@ -30,7 +30,6 @@ import (
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/klog/v2"
 
-	"github.com/kubernetes-csi/external-health-monitor/pkg/apis/volumehealth"
 	"github.com/kubernetes-csi/external-health-monitor/pkg/metrics"
 )
 
@@ -65,7 +64,7 @@ type PVHealthConditionChecker struct {
 	//
 	// TODO: once pvc.Status.HealthStatus exists in k8s.io/api, read the
 	// baseline from the informer cache instead so suppression survives a restart.
-	lastApplied map[string][]volumehealth.VolumeHealthCondition
+	lastApplied map[string][]v1.VolumeHealthCondition
 }
 
 func NewPVHealthConditionChecker(
@@ -89,7 +88,7 @@ func NewPVHealthConditionChecker(
 		metrics:                healthMetrics,
 		knownUnhealthy:         map[string]bool{},
 		absentListCycles:       map[string]int{},
-		lastApplied:            map[string][]volumehealth.VolumeHealthCondition{},
+		lastApplied:            map[string][]v1.VolumeHealthCondition{},
 	}
 }
 
@@ -234,7 +233,7 @@ func (checker *PVHealthConditionChecker) CheckControllerVolumeHealth(ctx context
 
 // The driver's report is authoritative (overwrite, not merge), and a patch is issued only
 // when the set differs from the last-applied baseline, keeping the steady-state rate zero.
-func (checker *PVHealthConditionChecker) reconcileAndTrack(ctx context.Context, pvc *v1.PersistentVolumeClaim, volumeHandle string, conditions []volumehealth.VolumeHealthCondition) error {
+func (checker *PVHealthConditionChecker) reconcileAndTrack(ctx context.Context, pvc *v1.PersistentVolumeClaim, volumeHandle string, conditions []v1.VolumeHealthCondition) error {
 	pvcKey := pvc.Namespace + "/" + pvc.Name
 	desired := normalizeConditions(conditions)
 
@@ -274,7 +273,7 @@ func (checker *PVHealthConditionChecker) observeProbe(method string, start time.
 
 // One gauge series per (status, reason) while unhealthy; all removed on recovery. Safe when
 // metrics is nil.
-func (checker *PVHealthConditionChecker) updateVolumeHealthGauge(namespace, name string, desired []volumehealth.VolumeHealthCondition) {
+func (checker *PVHealthConditionChecker) updateVolumeHealthGauge(namespace, name string, desired []v1.VolumeHealthCondition) {
 	if checker.metrics == nil {
 		return
 	}
