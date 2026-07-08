@@ -11,7 +11,6 @@ import (
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
-	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2/ktesting"
 	_ "k8s.io/klog/v2/ktesting/init"
 
@@ -26,12 +25,10 @@ import (
 
 type fakeNativeObjects struct {
 	MockVolume *mock.MockVolume
-	MockNode   *mock.MockNode
 }
 
 type testCase struct {
 	name                    string
-	enableNodeWatcher       bool
 	fakeNativeObjects       *fakeNativeObjects
 	supportListVolumeHealth bool
 	wantAbnormalPatch       bool
@@ -65,34 +62,21 @@ func runTest(t *testing.T, tc *testCase) {
 		tc.fakeNativeObjects.MockVolume.NativeVolume,
 		tc.fakeNativeObjects.MockVolume.NativeVolumeClaim,
 	}
-	if tc.enableNodeWatcher {
-		nativeObjects = append(nativeObjects, tc.fakeNativeObjects.MockNode.NativeNode)
-	}
-
 	client := fake.NewSimpleClientset(nativeObjects...)
 	informers := informers.NewSharedInformerFactory(client, 0)
 	pvInformer := informers.Core().V1().PersistentVolumes()
 	pvcInformer := informers.Core().V1().PersistentVolumeClaims()
-	nodeInformer := informers.Core().V1().Nodes()
 	option := &PVMonitorOptions{
-		DriverName:                "fake.csi.driver.io",
-		ContextTimeout:            15 * time.Second,
-		EnableNodeWatcher:         tc.enableNodeWatcher,
-		ListVolumesInterval:       5 * time.Minute,
-		PVWorkerExecuteInterval:   1 * time.Minute,
-		VolumeListAndAddInterval:  5 * time.Minute,
-		NodeWorkerExecuteInterval: 1 * time.Minute,
-		NodeListAndAddInterval:    5 * time.Minute,
-		SupportListVolumeHealth:   tc.supportListVolumeHealth,
+		DriverName:               "fake.csi.driver.io",
+		ContextTimeout:           15 * time.Second,
+		ListVolumesInterval:      5 * time.Minute,
+		PVWorkerExecuteInterval:  1 * time.Minute,
+		VolumeListAndAddInterval: 5 * time.Minute,
+		SupportListVolumeHealth:  tc.supportListVolumeHealth,
 	}
 
 	_, _, _, controllerServer, _, csiConn, err := mock.CreateMockServer(t)
 	assert.Nil(err)
-
-	eventStore := make(chan string, 1)
-	eventRecorder := record.FakeRecorder{
-		Events: eventStore,
-	}
 
 	var volumes []*mock.CSIVolume
 	volumes = append(volumes, tc.fakeNativeObjects.MockVolume.CSIVolume)
@@ -101,14 +85,9 @@ func runTest(t *testing.T, tc *testCase) {
 	err = pvcInformer.Informer().GetStore().Add(tc.fakeNativeObjects.MockVolume.NativeVolumeClaim)
 	assert.Nil(err)
 
-	if tc.enableNodeWatcher {
-		err = nodeInformer.Informer().GetStore().Add(tc.fakeNativeObjects.MockNode.NativeNode)
-		assert.Nil(err)
-	}
-
-	logger, ctx := ktesting.NewTestContext(t)
+	_, ctx := ktesting.NewTestContext(t)
 	mockCSIControllerServer(controllerServer, tc.supportListVolumeHealth, volumes)
-	pvMonitorController := NewPVMonitorController(logger, client, csiConn, informers, &eventRecorder, metrics.New(), option)
+	pvMonitorController := NewPVMonitorController(client, csiConn, informers, metrics.New(), option)
 	assert.NotNil(pvMonitorController)
 
 	ctx, cancel := context.WithCancel(ctx)

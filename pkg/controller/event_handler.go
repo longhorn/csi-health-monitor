@@ -32,11 +32,3 @@ func (ctrl *PVMonitorController) pvAdded(obj interface{}) {
 	ctrl.pvQueue.Add(pv.Name)
 	ctrl.pvEnqueued[pv.Name] = true
 }
-
-func (ctrl *PVMonitorController) podAdded(obj interface{}) {
-	ctrl.pvcToPodsCache.AddPod(obj.(*v1.Pod))
-}
-
-func (ctrl *PVMonitorController) podDeleted(obj interface{}) {
-	ctrl.pvcToPodsCache.DeletePod(obj.(*v1.Pod))
-}

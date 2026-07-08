@@ -35,66 +35,36 @@ func healthyMockVolume() *mock.MockVolume {
 	}
 }
 
-func Test_AbnormalVolumeWithoutNodeWatcher(t *testing.T) {
+func Test_AbnormalVolumeWithListVolumeHealth(t *testing.T) {
 	runTest(t, &testCase{
 		name:                    "abnormal_volume_list",
-		enableNodeWatcher:       false,
 		supportListVolumeHealth: true,
 		fakeNativeObjects:       &fakeNativeObjects{MockVolume: abnormalMockVolume()},
 		wantAbnormalPatch:       true,
 	})
 }
 
-func Test_AbnormalVolumeWithNodeWatcher(t *testing.T) {
-	runTest(t, &testCase{
-		name:                    "abnormal_volume_list_nodewatcher",
-		enableNodeWatcher:       true,
-		supportListVolumeHealth: true,
-		fakeNativeObjects: &fakeNativeObjects{
-			MockVolume: abnormalMockVolume(),
-			MockNode:   &mock.MockNode{NativeNode: mock.CreateNode("node1", "")},
-		},
-		wantAbnormalPatch: true,
-	})
-}
-
-func Test_NormalVolumeWithoutNodeWatcher(t *testing.T) {
+func Test_NormalVolumeWithListVolumeHealth(t *testing.T) {
 	runTest(t, &testCase{
 		name:                    "normal_volume_list",
-		enableNodeWatcher:       false,
 		supportListVolumeHealth: true,
 		fakeNativeObjects:       &fakeNativeObjects{MockVolume: healthyMockVolume()},
 		wantAbnormalPatch:       false,
 	})
 }
 
-func Test_AbnormalVolumeWithoutNodeWatcherAndGetVolumeHealth(t *testing.T) {
+func Test_AbnormalVolumeWithGetVolumeHealth(t *testing.T) {
 	runTest(t, &testCase{
 		name:                    "abnormal_volume_get",
-		enableNodeWatcher:       false,
 		supportListVolumeHealth: false,
 		fakeNativeObjects:       &fakeNativeObjects{MockVolume: abnormalMockVolume()},
 		wantAbnormalPatch:       true,
 	})
 }
 
-func Test_AbnormalVolumeWithNodeWatcherAndGetVolumeHealth(t *testing.T) {
-	runTest(t, &testCase{
-		name:                    "abnormal_volume_get_nodewatcher",
-		enableNodeWatcher:       true,
-		supportListVolumeHealth: false,
-		fakeNativeObjects: &fakeNativeObjects{
-			MockVolume: abnormalMockVolume(),
-			MockNode:   &mock.MockNode{NativeNode: mock.CreateNode("node1", "")},
-		},
-		wantAbnormalPatch: true,
-	})
-}
-
-func Test_NormalVolumeWithoutNodeWatcherAndGetVolumeHealth(t *testing.T) {
+func Test_NormalVolumeWithGetVolumeHealth(t *testing.T) {
 	runTest(t, &testCase{
 		name:                    "normal_volume_get",
-		enableNodeWatcher:       false,
 		supportListVolumeHealth: false,
 		fakeNativeObjects:       &fakeNativeObjects{MockVolume: healthyMockVolume()},
 		wantAbnormalPatch:       false,

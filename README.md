@@ -10,19 +10,20 @@ When this feature was first introduced in Kubernetes 1.19, there was an `Externa
 
 - External Health Monitor Controller:
   - The external health monitor controller will be deployed as a sidecar together with the CSI controller driver, similar to how the external-provisioner sidecar is deployed.
-  - Trigger controller RPC to check the health condition of the CSI volumes.
-  - The external controller sidecar will also watch for node failure events. This component can be enabled via a flag.
+  - Trigger controller RPCs to check the health condition of the CSI volumes.
+  - Write controller-reported health to `PersistentVolumeClaim.Status.HealthStatus`.
 
 - Kubelet:
-  - In addition to existing volume stats collected already, Kubelet will also check volume's mounting conditions collected from the same CSI node RPC and log events to Pods if volume condition is abnormal.
+  - Kubelet owns node-side CSI volume health monitoring and surfaces node observations through Kubernetes status fields.
 
 The Volume Health Monitoring feature need to invoke the following CSI interfaces.
 
 - External Health Monitor Controller:
-  - ListVolumes (If both `ListVolumes` and `ControllerGetVolume` are supported, `ListVolumes` will be used)
-  - ControllerGetVolume
+  - ControllerListVolumeHealth (preferred when supported)
+  - ControllerGetVolumeHealth
 - Kubelet:
-  - NodeGetVolumeStats
+  - NodeGetVolumeHealth
+  - NodeGetStorageHealth
   - This feature in Kubelet is controlled by an Alpha feature gate `CSIVolumeHealth`.
 
 ## Compatibility
@@ -70,7 +71,7 @@ Check logs of external health monitor controller as follows:
 
 -  `kubectl logs <leader-of-external-health-monitor-controller-container-name> -c csi-external-health-monitor-controller`
 
-Check if there are events on PVCs or Pods that report abnormal volume condition when the volume you are using is abnormal.
+Check `pvc.status.healthStatus` for controller-reported abnormal volume health when the volume you are using is abnormal.
 
 ## csi-external-health-monitor-controller-sidecar-command-line-options
 
@@ -102,17 +103,13 @@ Check if there are events on PVCs or Pods that report abnormal volume condition 
 
 - `version`: Prints the current version of external-health-monitor-controller.
 
-- `timeout <duration>`: Timeout of all calls to CSI Driver. It should be set to value that accommodates the majority of `ListVolumes`, `ControllerGetVolume` calls. 15 seconds is used by default.
+- `timeout <duration>`: Timeout of all calls to CSI Driver. It should be set to value that accommodates the majority of `ControllerListVolumeHealth` and `ControllerGetVolumeHealth` calls. 15 seconds is used by default.
 
-- `list-volumes-interval <duration>`: Interval of monitoring volume health condition by invoking the RPC interface of `ListVolumes`. You can adjust it to change the frequency of the evaluation process. Five minutes by default if not set.
+- `list-volumes-interval <duration>`: Interval of monitoring volume health condition by invoking `ControllerListVolumeHealth`. You can adjust it to change the frequency of the evaluation process. Five minutes by default if not set.
 
-- `enable-node-watcher <boolean>`: Enable node-watcher. node-watcher evaluates volume health condition by checking node status periodically.
+- `monitor-interval <duration>`: Interval of monitoring volume health condition when CSI Driver supports `ControllerGetVolumeHealth`, but not `ControllerListVolumeHealth`. You can adjust it to change the frequency of the evaluation process. One minute by default if not set.
 
-- `monitor-interval <duration>`: Interval of monitoring volume health condition when CSI Driver supports `ControllerGetVolume`, but not `ListVolumes`. It is also used by nodeWatcher. You can adjust it to change the frequency of the evaluation process. One minute by default if not set.
-
-- `volume-list-add-interval <duration>`: Interval of listing volumes and adding them to the queue when CSI driver supports `ControllerGetVolume`, but not `ListVolumes`.
-
-- `node-list-add-interval <duration>`: Interval of listing nodes and adding them. It is used together with `monitor-interval` and `enable-node-watcher` by nodeWatcher.
+- `volume-list-add-interval <duration>`: Interval of listing volumes and adding them to the queue when CSI driver supports `ControllerGetVolumeHealth`, but not `ControllerListVolumeHealth`.
 
 - `metrics-address`: (deprecated) The TCP network address where the Prometheus metrics endpoint will run (example: :8080, which corresponds to port 8080 on local host). The default is the empty string, which means the metrics and leader election check endpoint is disabled.
 

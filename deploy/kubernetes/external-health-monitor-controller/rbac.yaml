@@ -16,7 +16,7 @@ metadata:
   namespace: default
 
 ---
-# Health monitor controller must be able to work with PVs, PVCs, Nodes and Pods
+# Health monitor controller must be able to work with PVs and PVCs
 kind: ClusterRole
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:
@@ -31,15 +31,6 @@ rules:
   - apiGroups: [""]
     resources: ["persistentvolumeclaims/status"]
     verbs: ["patch"]
-  - apiGroups: [""]
-    resources: ["nodes"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: [""]
-    resources: ["events"]
-    verbs: ["get", "list", "watch", "create", "patch"]
 
 ---
 kind: ClusterRoleBinding

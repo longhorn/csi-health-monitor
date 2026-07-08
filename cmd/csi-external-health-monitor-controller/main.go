@@ -25,14 +25,10 @@ import (
 	"sync"
 	"time"
 
-	v1 "k8s.io/api/core/v1"
 	"k8s.io/apiserver/pkg/server"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/kubernetes/scheme"
-	corev1 "k8s.io/client-go/kubernetes/typed/core/v1"
-	"k8s.io/client-go/tools/record"
 	"k8s.io/component-base/featuregate"
 	"k8s.io/component-base/logs"
 	logsapi "k8s.io/component-base/logs/api/v1"
@@ -67,9 +63,7 @@ var (
 	timeout                  = flag.Duration("timeout", 15*time.Second, "Timeout for waiting for attaching or detaching the volume.")
 	listVolumesInterval      = flag.Duration("list-volumes-interval", 5*time.Minute, "Time interval for calling ListVolumes RPC to check volumes' health condition")
 	volumeListAndAddInterval = flag.Duration("volume-list-add-interval", 5*time.Minute, "Time interval for listing volumes and add them to queue")
-	nodeListAndAddInterval   = flag.Duration("node-list-add-interval", 5*time.Minute, "Time interval for listing nodess and add them to queue")
 	workerThreads            = flag.Uint("worker-threads", 10, "Number of pv monitor worker threads")
-	enableNodeWatcher        = flag.Bool("enable-node-watcher", false, "Indicates whether the node watcher is enabled or not.")
 )
 
 var (
@@ -205,27 +199,17 @@ func main() {
 	option := monitorcontroller.PVMonitorOptions{
 		DriverName:              storageDriver,
 		ContextTimeout:          *timeout,
-		EnableNodeWatcher:       *enableNodeWatcher,
 		SupportListVolumeHealth: supportListVolumeHealth,
 
 		ListVolumesInterval:      *listVolumesInterval,
 		PVWorkerExecuteInterval:  *monitorInterval,
 		VolumeListAndAddInterval: *volumeListAndAddInterval,
-
-		NodeWorkerExecuteInterval: *monitorInterval,
-		NodeListAndAddInterval:    *nodeListAndAddInterval,
 	}
 
-	broadcaster := record.NewBroadcaster(record.WithContext(ctx))
-	broadcaster.StartRecordingToSink(&corev1.EventSinkImpl{Interface: clientset.CoreV1().Events(v1.NamespaceAll)})
-	eventRecorder := broadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: fmt.Sprintf("csi-pv-monitor-controller-%s", option.DriverName)}).WithLogger(logger)
-
 	monitorController := monitorcontroller.NewPVMonitorController(
-		logger,
 		clientset,
 		csiConn,
 		factory,
-		eventRecorder,
 		healthMetrics,
 		&option,
 	)
