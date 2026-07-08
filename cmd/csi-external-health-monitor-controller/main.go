@@ -197,6 +197,10 @@ func main() {
 		logger.V(2).Info("CSI driver supports neither ControllerListVolumeHealth nor ControllerGetVolumeHealth, exiting")
 		klog.FlushAndExit(klog.ExitFlushTimeout, 1)
 	}
+	if supportListVolumeHealth && !supportGetVolumeHealth {
+		logger.Error(nil, "CSI driver supports ControllerListVolumeHealth without required ControllerGetVolumeHealth")
+		klog.FlushAndExit(klog.ExitFlushTimeout, 1)
+	}
 
 	option := monitorcontroller.PVMonitorOptions{
 		DriverName:              storageDriver,

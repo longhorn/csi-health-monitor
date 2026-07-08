@@ -51,14 +51,18 @@ type PVHealthConditionChecker struct {
 	// recoveryStateMu guards recovery state mutated from the GetVolume workers and the
 	// ListVolumes goroutine.
 	recoveryStateMu sync.Mutex
-	// knownUnhealthy tracks volume handles currently reported unhealthy; only these need
-	// clearing on recovery.
+	// knownUnhealthy tracks volume handles reported unhealthy during this process;
+	// PVC status covers unhealthy state that predates this process.
 	knownUnhealthy map[string]bool
-	// lastApplied is the per-PVC (namespace/name) no-op-suppression baseline.
-	//
-	// TODO: once pvc.Status.HealthStatus exists in k8s.io/api, read the
-	// baseline from the informer cache instead so suppression survives a restart.
-	lastApplied map[string][]v1.VolumeHealthCondition
+	// lastApplied is a short-lived write-through cache used while the informer has
+	// not observed our status patch yet. The PVC status remains the source of truth:
+	// entries only apply to the resourceVersion they were computed from.
+	lastApplied map[string]appliedHealthStatus
+}
+
+type appliedHealthStatus struct {
+	resourceVersion string
+	conditions      []v1.VolumeHealthCondition
 }
 
 func NewPVHealthConditionChecker(
@@ -79,7 +83,7 @@ func NewPVHealthConditionChecker(
 		csiPVHandler:   NewCSIPVHandler(conn),
 		metrics:        healthMetrics,
 		knownUnhealthy: map[string]bool{},
-		lastApplied:    map[string][]v1.VolumeHealthCondition{},
+		lastApplied:    map[string]appliedHealthStatus{},
 	}
 }
 
@@ -140,12 +144,10 @@ func (checker *PVHealthConditionChecker) CheckControllerListVolumeHealth(ctx con
 	return nil
 }
 
-// No-op unless the volume is currently believed unhealthy.
+// No-op unless the volume is currently believed unhealthy or PVC status already
+// has stored health conditions from a previous controller run.
 func (checker *PVHealthConditionChecker) handleAbsentInListCycle(ctx context.Context, pvc *v1.PersistentVolumeClaim, volumeHandle string) error {
-	checker.recoveryStateMu.Lock()
-	unhealthy := checker.knownUnhealthy[volumeHandle]
-	checker.recoveryStateMu.Unlock()
-	if !unhealthy {
+	if !checker.needsAbsentVolumeConfirmation(pvc, volumeHandle) {
 		return nil
 	}
 
@@ -209,14 +211,11 @@ func (checker *PVHealthConditionChecker) CheckControllerVolumeHealth(ctx context
 }
 
 // The driver's report is authoritative (overwrite, not merge), and a patch is issued only
-// when the set differs from the last-applied baseline, keeping the steady-state rate zero.
+// when it differs from PVC status or a same-resourceVersion patch not yet seen by the informer.
 func (checker *PVHealthConditionChecker) reconcileAndTrack(ctx context.Context, pvc *v1.PersistentVolumeClaim, volumeHandle string, conditions []v1.VolumeHealthCondition) error {
 	pvcKey := pvc.Namespace + "/" + pvc.Name
 	desired := normalizeConditions(conditions)
-
-	checker.recoveryStateMu.Lock()
-	prev := checker.lastApplied[pvcKey]
-	checker.recoveryStateMu.Unlock()
+	prev := checker.currentHealthConditions(pvcKey, pvc)
 
 	if !conditionsEqual(prev, desired) {
 		if err := checker.patchPVCHealthStatus(ctx, pvc, buildHealthStatus(desired)); err != nil {
@@ -229,14 +228,54 @@ func (checker *PVHealthConditionChecker) reconcileAndTrack(ctx context.Context, 
 	defer checker.recoveryStateMu.Unlock()
 	if len(desired) > 0 {
 		checker.knownUnhealthy[volumeHandle] = true
-		checker.lastApplied[pvcKey] = desired
 	} else {
 		delete(checker.knownUnhealthy, volumeHandle)
+	}
+
+	if conditionsEqual(pvcHealthConditions(pvc), desired) {
 		delete(checker.lastApplied, pvcKey)
+	} else {
+		checker.lastApplied[pvcKey] = appliedHealthStatus{
+			resourceVersion: pvc.ResourceVersion,
+			conditions:      desired,
+		}
 	}
 
 	checker.updateVolumeHealthGauge(pvc.Namespace, pvc.Name, desired)
 	return nil
+}
+
+func (checker *PVHealthConditionChecker) needsAbsentVolumeConfirmation(pvc *v1.PersistentVolumeClaim, volumeHandle string) bool {
+	pvcKey := pvc.Namespace + "/" + pvc.Name
+
+	checker.recoveryStateMu.Lock()
+	if checker.knownUnhealthy[volumeHandle] {
+		checker.recoveryStateMu.Unlock()
+		return true
+	}
+	applied, ok := checker.lastApplied[pvcKey]
+	checker.recoveryStateMu.Unlock()
+
+	if ok && applied.resourceVersion == pvc.ResourceVersion {
+		return len(applied.conditions) > 0
+	}
+	return len(pvcHealthConditions(pvc)) > 0
+}
+
+func (checker *PVHealthConditionChecker) currentHealthConditions(pvcKey string, pvc *v1.PersistentVolumeClaim) []v1.VolumeHealthCondition {
+	current := pvcHealthConditions(pvc)
+
+	checker.recoveryStateMu.Lock()
+	defer checker.recoveryStateMu.Unlock()
+	applied, ok := checker.lastApplied[pvcKey]
+	if !ok {
+		return current
+	}
+	if applied.resourceVersion != pvc.ResourceVersion {
+		delete(checker.lastApplied, pvcKey)
+		return current
+	}
+	return applied.conditions
 }
 
 // Safe when metrics is nil.

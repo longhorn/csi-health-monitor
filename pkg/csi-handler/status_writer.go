@@ -59,6 +59,13 @@ func (checker *PVHealthConditionChecker) patchPVCHealthStatus(
 	return nil
 }
 
+func pvcHealthConditions(pvc *v1.PersistentVolumeClaim) []v1.VolumeHealthCondition {
+	if pvc == nil || pvc.Status.HealthStatus == nil {
+		return nil
+	}
+	return normalizeConditions(pvc.Status.HealthStatus.HealthConditions)
+}
+
 // normalizeConditions returns a stable-sorted copy so equality comparison and patch output are deterministic.
 func normalizeConditions(in []v1.VolumeHealthCondition) []v1.VolumeHealthCondition {
 	if len(in) == 0 {
