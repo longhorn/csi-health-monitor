@@ -52,7 +52,7 @@ type PVMonitorController struct {
 	pvcLister       corelisters.PersistentVolumeClaimLister
 	pvcListerSynced cache.InformerSynced
 
-	// used for updating pvEnqueue map
+	// used for updating the pvEnqueued map
 	sync.Mutex
 	// pvEnqueued stores all CSI PVs which are enqueued
 	pvEnqueued map[string]bool
@@ -151,7 +151,6 @@ func (ctrl *PVMonitorController) Run(ctx context.Context, workers int, wg *sync.
 		return
 	}
 
-	// TODO: we need to cache the PVs info and get the diff so that we can identify the NotFound error
 	// if the driver supports ControllerListVolumeHealth, it is preferred for performance reasons
 	if ctrl.supportListVolumeHealth {
 		goTrack(wg, func() {
@@ -201,8 +200,6 @@ func (ctrl *PVMonitorController) checkPVsHealthConditionByListVolumeHealth(ctx c
 
 // AddPVsToQueue adds PVs to queue periodically
 func (ctrl *PVMonitorController) AddPVsToQueue() error {
-	// TODO: add PV filters when listing
-	// for example: only return CSI PVs
 	pvs, err := ctrl.pvLister.List(labels.Everything())
 	if err != nil {
 		return err
@@ -246,7 +243,6 @@ func (ctrl *PVMonitorController) checkPVWorker(ctx context.Context) {
 	pvName := key.(string)
 	logger.V(4).Info("Started PV processing", "pv", pvName)
 
-	// get PV to process
 	pv, err := ctrl.pvLister.Get(pvName)
 	if err != nil {
 		if apierrs.IsNotFound(err) {

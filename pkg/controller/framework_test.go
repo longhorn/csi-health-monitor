@@ -25,7 +25,6 @@ type fakeNativeObjects struct {
 }
 
 type testCase struct {
-	name                    string
 	fakeNativeObjects       *fakeNativeObjects
 	supportListVolumeHealth bool
 	wantAbnormalPatch       bool

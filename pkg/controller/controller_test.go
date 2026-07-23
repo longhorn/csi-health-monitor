@@ -27,7 +27,7 @@ func abnormalMockVolume() *mock.MockVolume {
 			Volume: csiVolume("abnormalVolume1"),
 			Health: mock.AbnormalVolumeHealth("abnormalVolume1"),
 		},
-		NativeVolume:      mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "abnormalVolume1", "pvcuid", &mock.FSVolumeMode, v1.VolumeBound),
+		NativeVolume:      mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "abnormalVolume1", "pvcuid", &mock.BlockVolumeMode, v1.VolumeBound),
 		NativeVolumeClaim: mock.CreatePVC(1, 2, "pvc", "pvcuid", mock.DefaultNS, "pv", v1.ClaimBound),
 	}
 }
@@ -38,14 +38,13 @@ func healthyMockVolume() *mock.MockVolume {
 			Volume: csiVolume("normalVolume1"),
 			Health: mock.HealthyVolumeHealth("normalVolume1"),
 		},
-		NativeVolume:      mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "normalVolume1", "pvcuid", &mock.FSVolumeMode, v1.VolumeBound),
+		NativeVolume:      mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "normalVolume1", "pvcuid", &mock.BlockVolumeMode, v1.VolumeBound),
 		NativeVolumeClaim: mock.CreatePVC(1, 2, "pvc", "pvcuid", mock.DefaultNS, "pv", v1.ClaimBound),
 	}
 }
 
 func Test_AbnormalVolumeWithListVolumeHealth(t *testing.T) {
 	runTest(t, &testCase{
-		name:                    "abnormal_volume_list",
 		supportListVolumeHealth: true,
 		fakeNativeObjects:       &fakeNativeObjects{MockVolume: abnormalMockVolume()},
 		wantAbnormalPatch:       true,
@@ -54,7 +53,6 @@ func Test_AbnormalVolumeWithListVolumeHealth(t *testing.T) {
 
 func Test_NormalVolumeWithListVolumeHealth(t *testing.T) {
 	runTest(t, &testCase{
-		name:                    "normal_volume_list",
 		supportListVolumeHealth: true,
 		fakeNativeObjects:       &fakeNativeObjects{MockVolume: healthyMockVolume()},
 		wantAbnormalPatch:       false,
@@ -63,7 +61,6 @@ func Test_NormalVolumeWithListVolumeHealth(t *testing.T) {
 
 func Test_AbnormalVolumeWithGetVolumeHealth(t *testing.T) {
 	runTest(t, &testCase{
-		name:                    "abnormal_volume_get",
 		supportListVolumeHealth: false,
 		fakeNativeObjects:       &fakeNativeObjects{MockVolume: abnormalMockVolume()},
 		wantAbnormalPatch:       true,
@@ -72,7 +69,6 @@ func Test_AbnormalVolumeWithGetVolumeHealth(t *testing.T) {
 
 func Test_NormalVolumeWithGetVolumeHealth(t *testing.T) {
 	runTest(t, &testCase{
-		name:                    "normal_volume_get",
 		supportListVolumeHealth: false,
 		fakeNativeObjects:       &fakeNativeObjects{MockVolume: healthyMockVolume()},
 		wantAbnormalPatch:       false,
@@ -112,7 +108,7 @@ func newGetModeFixture(t *testing.T, pv *v1.PersistentVolume, pvc *v1.Persistent
 func Test_PendingPVIsMonitoredOnceBound(t *testing.T) {
 	assert := assert.New(t)
 
-	pv := mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "vol-1", "pvcuid", &mock.FSVolumeMode, v1.VolumePending)
+	pv := mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "vol-1", "pvcuid", &mock.BlockVolumeMode, v1.VolumePending)
 	pvc := mock.CreatePVC(1, 2, "pvc", "pvcuid", mock.DefaultNS, "pv", v1.ClaimBound)
 	ctrl, drv, pvStore := newGetModeFixture(t, pv, pvc)
 	drv.Controller.SetGetVolumeHealth("vol-1", &csi.ControllerGetVolumeHealthResponse{VolumeHealth: mock.AbnormalVolumeHealth("vol-1")}, nil)
@@ -138,7 +134,7 @@ func Test_PendingPVIsMonitoredOnceBound(t *testing.T) {
 func Test_PVUnboundAtPopIsForgottenAndPickedUpAgain(t *testing.T) {
 	assert := assert.New(t)
 
-	pv := mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "vol-1", "pvcuid", &mock.FSVolumeMode, v1.VolumeBound)
+	pv := mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "vol-1", "pvcuid", &mock.BlockVolumeMode, v1.VolumeBound)
 	pvc := mock.CreatePVC(1, 2, "pvc", "pvcuid", mock.DefaultNS, "pv", v1.ClaimBound)
 	ctrl, drv, pvStore := newGetModeFixture(t, pv, pvc)
 	drv.Controller.SetGetVolumeHealth("vol-1", &csi.ControllerGetVolumeHealthResponse{VolumeHealth: mock.AbnormalVolumeHealth("vol-1")}, nil)
@@ -167,7 +163,7 @@ func Test_PVUnboundAtPopIsForgottenAndPickedUpAgain(t *testing.T) {
 func Test_DeletingPVIsForgotten(t *testing.T) {
 	assert := assert.New(t)
 
-	pv := mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "vol-1", "pvcuid", &mock.FSVolumeMode, v1.VolumeBound)
+	pv := mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "vol-1", "pvcuid", &mock.BlockVolumeMode, v1.VolumeBound)
 	pvc := mock.CreatePVC(1, 2, "pvc", "pvcuid", mock.DefaultNS, "pv", v1.ClaimBound)
 	ctrl, drv, pvStore := newGetModeFixture(t, pv, pvc)
 

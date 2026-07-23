@@ -2,8 +2,6 @@ package mock
 
 import (
 	"context"
-	"errors"
-	"time"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -20,17 +18,14 @@ import (
 )
 
 var (
-	DefaultNS          = "test"
-	DriverName         = "fake.csi.driver.io"
-	DefaultKubeletPath = "/var/lib/kubelet"
-	FSVolumeMode       = v1.PersistentVolumeBlock
-	ErrorWatchTimeout  = errors.New("watch event timeout")
+	DefaultNS       = "test"
+	DriverName      = "fake.csi.driver.io"
+	BlockVolumeMode = v1.PersistentVolumeBlock
 )
 
 type CSIVolume struct {
-	Volume  *csi.Volume
-	Health  *csi.VolumeHealth
-	IsBlock bool
+	Volume *csi.Volume
+	Health *csi.VolumeHealth
 }
 
 func AbnormalVolumeHealth(volumeID string) *csi.VolumeHealth {
@@ -51,18 +46,6 @@ func HealthyVolumeHealth(volumeID string) *csi.VolumeHealth {
 		VolumeId:       volumeID,
 		HealthStatuses: nil,
 	}
-}
-
-type MockNode struct {
-	NativeNode *v1.Node
-}
-
-type MockPod struct {
-	NativePod *v1.Pod
-}
-
-type MockEvent struct {
-	NativeEvent *v1.Event
 }
 
 type MockVolume struct {
@@ -90,39 +73,6 @@ func New(ctx context.Context, address string) (*grpc.ClientConn, error) {
 	}
 
 	return conn, nil
-}
-
-func createNode(name, namespace string) *v1.Node {
-	return &v1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-	}
-}
-
-func createPod(name, namespace, volumeName, pvcName, nodeName, uid string, pvcReadOnly bool) *v1.Pod {
-	return &v1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-			UID:       types.UID(uid),
-		},
-		Spec: v1.PodSpec{
-			NodeName: nodeName,
-			Volumes: []v1.Volume{
-				{
-					Name: volumeName,
-					VolumeSource: v1.VolumeSource{
-						PersistentVolumeClaim: &v1.PersistentVolumeClaimVolumeSource{
-							ClaimName: pvcName,
-							ReadOnly:  pvcReadOnly,
-						},
-					},
-				},
-			},
-		},
-	}
 }
 
 func createPVC(requestGB, capacityGB int, name, uid, namespace, volumeName string, volumePhase v1.PersistentVolumeClaimPhase) *v1.PersistentVolumeClaim {
@@ -186,20 +136,6 @@ func createPV(capacityGB int, pvcName, name, pvcNamespace string, pvcUID types.U
 	return pv
 }
 
-func createEvent(name, namespace, uid, eventType, eventReason string) *v1.Event {
-	return &v1.Event{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-		InvolvedObject: v1.ObjectReference{
-			UID: types.UID(uid),
-		},
-		Type:   eventType,
-		Reason: eventReason,
-	}
-}
-
 func CreatePVWithoutCSIDriver(capacityGB int, pvcName, name, pvcNamespace string, pvcUID types.UID, volumeId string, volumePhase v1.PersistentVolumePhase, volumeMode *v1.PersistentVolumeMode) *v1.PersistentVolume {
 	pv := createPV(capacityGB, pvcName, name, pvcNamespace, pvcUID, volumeId, volumePhase, volumeMode)
 	pv.Spec.CSI = nil
@@ -218,25 +154,4 @@ func CreatePVC(requestGB, capacityGB int, name, uid, namespace, volumeName strin
 
 func CreatePV(capacityGB int, pvcName, name, pvcNamespace, volumeId string, pvcUID types.UID, volumeMode *v1.PersistentVolumeMode, volumePhase v1.PersistentVolumePhase) *v1.PersistentVolume {
 	return createPV(capacityGB, pvcName, name, pvcNamespace, pvcUID, volumeId, volumePhase, volumeMode)
-}
-
-func CreateNode(name, namespace string) *v1.Node {
-	return createNode(name, namespace)
-}
-
-func CreatePod(name, namespace, volumeName, pvcName, nodeName, uid string, pvcReadOnly bool) *v1.Pod {
-	return createPod(name, namespace, volumeName, pvcName, nodeName, uid, pvcReadOnly)
-}
-
-func CreateEvent(name, namespace, uid, eventType, eventReason string) *v1.Event {
-	return createEvent(name, namespace, uid, eventType, eventReason)
-}
-
-func WatchEvent(want bool, eventChan <-chan string) (string, error) {
-	select {
-	case event := <-eventChan:
-		return event, nil
-	case <-time.After(5 * time.Second):
-		return "", ErrorWatchTimeout
-	}
 }

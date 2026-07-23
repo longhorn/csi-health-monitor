@@ -60,7 +60,7 @@ var (
 	monitorInterval = flag.Duration("monitor-interval", 1*time.Minute, "Interval for controller to check volumes health condition.")
 
 	resync                   = flag.Duration("resync", 10*time.Minute, "Resync interval of the controller.")
-	timeout                  = flag.Duration("timeout", 15*time.Second, "Timeout for waiting for attaching or detaching the volume.")
+	timeout                  = flag.Duration("timeout", 15*time.Second, "Timeout of each call to the CSI driver and of each PVC status patch.")
 	listVolumesInterval      = flag.Duration("list-volumes-interval", 5*time.Minute, "Time interval for calling ControllerListVolumeHealth RPC to check volumes' health condition")
 	volumeListAndAddInterval = flag.Duration("volume-list-add-interval", 5*time.Minute, "Time interval for listing volumes and add them to queue")
 	workerThreads            = flag.Uint("worker-threads", 10, "Number of pv monitor worker threads")
@@ -165,12 +165,12 @@ func main() {
 		}()
 	}
 
-	supportsService, err := supportsPluginControllerService(cancelationCtx, csiConn)
+	pluginCapabilities, err := rpc.GetPluginCapabilities(cancelationCtx, csiConn)
 	if err != nil {
 		logger.Error(err, "Failed to check whether the CSI driver supports the Plugin Controller Service")
 		klog.FlushAndExit(klog.ExitFlushTimeout, 1)
 	}
-	if !supportsService {
+	if !pluginCapabilities[csi.PluginCapability_Service_CONTROLLER_SERVICE] {
 		logger.V(2).Info("CSI driver does not support Plugin Controller Service, exiting")
 		klog.FlushAndExit(klog.ExitFlushTimeout, 1)
 	}
@@ -269,29 +269,4 @@ func supportsControllerCapability(ctx context.Context, csiConn *grpc.ClientConn,
 	}
 
 	return caps[capability], nil
-}
-
-// TODO: move this to csi-lib-utils
-func supportsPluginControllerService(ctx context.Context, csiConn *grpc.ClientConn) (bool, error) {
-	client := csi.NewIdentityClient(csiConn)
-	req := csi.GetPluginCapabilitiesRequest{}
-	rsp, err := client.GetPluginCapabilities(ctx, &req)
-	if err != nil {
-		return false, err
-	}
-	for _, cap := range rsp.GetCapabilities() {
-		if cap == nil {
-			continue
-		}
-		srv := cap.GetService()
-		if srv == nil {
-			continue
-		}
-		t := srv.GetType()
-		if t == csi.PluginCapability_Service_CONTROLLER_SERVICE {
-			return true, nil
-		}
-	}
-
-	return false, nil
 }

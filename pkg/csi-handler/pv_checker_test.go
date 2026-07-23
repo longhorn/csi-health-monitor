@@ -102,7 +102,7 @@ func TestPVHealthConditionChecker_CheckControllerListVolumeHealth(t *testing.T) 
 		{
 			name:         "Abnormal volume gets healthStatus patched",
 			pvc:          mock.CreatePVC(1, 2, "pvc", "uid", mock.DefaultNS, "pv", v1.ClaimBound),
-			pv:           mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "1", "uid", &mock.FSVolumeMode, v1.VolumeBound),
+			pv:           mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "1", "uid", &mock.BlockVolumeMode, v1.VolumeBound),
 			volumeId:     "1",
 			health:       mock.AbnormalVolumeHealth("1"),
 			wantPatch:    true,
@@ -111,7 +111,7 @@ func TestPVHealthConditionChecker_CheckControllerListVolumeHealth(t *testing.T) 
 		{
 			name:      "Healthy volume not previously unhealthy: no patch (no-op suppression)",
 			pvc:       mock.CreatePVC(1, 2, "pvc", "uid", mock.DefaultNS, "pv", v1.ClaimBound),
-			pv:        mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "2", "uid", &mock.FSVolumeMode, v1.VolumeBound),
+			pv:        mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "2", "uid", &mock.BlockVolumeMode, v1.VolumeBound),
 			volumeId:  "2",
 			health:    mock.HealthyVolumeHealth("2"),
 			wantPatch: false,
@@ -119,7 +119,7 @@ func TestPVHealthConditionChecker_CheckControllerListVolumeHealth(t *testing.T) 
 		{
 			name:      "PV without CSI driver is skipped",
 			pvc:       mock.CreatePVC(1, 2, "pvc", "uid", mock.DefaultNS, "pv", v1.ClaimBound),
-			pv:        mock.CreatePVWithoutCSIDriver(2, "pvc", "pv", mock.DefaultNS, "1", "uid", v1.VolumeBound, &mock.FSVolumeMode),
+			pv:        mock.CreatePVWithoutCSIDriver(2, "pvc", "pv", mock.DefaultNS, "1", "uid", v1.VolumeBound, &mock.BlockVolumeMode),
 			volumeId:  "1",
 			health:    mock.AbnormalVolumeHealth("1"),
 			wantPatch: false,
@@ -163,7 +163,7 @@ func Test_ListRecoveryUsesGetForMissingUnhealthyVolume(t *testing.T) {
 	assert := assert.New(t)
 	checker := createMockPVHealthConditionChecker(t)
 
-	pv := mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "1", "uid", &mock.FSVolumeMode, v1.VolumeBound)
+	pv := mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "1", "uid", &mock.BlockVolumeMode, v1.VolumeBound)
 	pvc := mock.CreatePVC(1, 2, "pvc", "uid", mock.DefaultNS, "pv", v1.ClaimBound)
 	assert.Nil(checker.pvInformer.Informer().GetStore().Add(pv))
 	checker.seedPVC(t, pvc)
@@ -200,7 +200,7 @@ func Test_ListAbsentVolumeWithStalePVCHealthStatusUsesGetAfterRestart(t *testing
 	assert := assert.New(t)
 	checker := createMockPVHealthConditionChecker(t)
 
-	pv := mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "1", "uid", &mock.FSVolumeMode, v1.VolumeBound)
+	pv := mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "1", "uid", &mock.BlockVolumeMode, v1.VolumeBound)
 	pvc := mock.CreatePVC(1, 2, "pvc", "uid", mock.DefaultNS, "pv", v1.ClaimBound)
 	setPVCHealthStatus(pvc, mock.AbnormalVolumeHealth("1"))
 	assert.Nil(checker.pvInformer.Informer().GetStore().Add(pv))
@@ -229,7 +229,7 @@ func Test_FailedRPCIsNotRecovery(t *testing.T) {
 	assert := assert.New(t)
 	checker := createMockPVHealthConditionChecker(t)
 
-	pv := mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "1", "uid", &mock.FSVolumeMode, v1.VolumeBound)
+	pv := mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "1", "uid", &mock.BlockVolumeMode, v1.VolumeBound)
 	pvc := mock.CreatePVC(1, 2, "pvc", "uid", mock.DefaultNS, "pv", v1.ClaimBound)
 	assert.Nil(checker.pvInformer.Informer().GetStore().Add(pv))
 	checker.seedPVC(t, pvc)
@@ -260,7 +260,7 @@ func Test_ConditionTransition(t *testing.T) {
 	assert := assert.New(t)
 	checker := createMockPVHealthConditionChecker(t)
 
-	pv := mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "1", "uid", &mock.FSVolumeMode, v1.VolumeBound)
+	pv := mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "1", "uid", &mock.BlockVolumeMode, v1.VolumeBound)
 	pvc := mock.CreatePVC(1, 2, "pvc", "uid", mock.DefaultNS, "pv", v1.ClaimBound)
 	assert.Nil(checker.pvInformer.Informer().GetStore().Add(pv))
 	checker.seedPVC(t, pvc)
@@ -295,7 +295,7 @@ func Test_GetClearsStalePVCHealthStatusAfterRestart(t *testing.T) {
 	assert := assert.New(t)
 	checker := createMockPVHealthConditionChecker(t)
 
-	pv := mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "1", "uid", &mock.FSVolumeMode, v1.VolumeBound)
+	pv := mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "1", "uid", &mock.BlockVolumeMode, v1.VolumeBound)
 	pvc := mock.CreatePVC(1, 2, "pvc", "uid", mock.DefaultNS, "pv", v1.ClaimBound)
 	setPVCHealthStatus(pvc, mock.AbnormalVolumeHealth("1"))
 	assert.Nil(checker.pvInformer.Informer().GetStore().Add(pv))
@@ -326,13 +326,13 @@ func TestPVHealthConditionChecker_GetVolumeHandle(t *testing.T) {
 	}{
 		{
 			name:    "Normal Case",
-			pv:      mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "2", "uid", &mock.FSVolumeMode, v1.VolumeBound),
+			pv:      mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "2", "uid", &mock.BlockVolumeMode, v1.VolumeBound),
 			wantErr: false,
 			want:    "2",
 		},
 		{
 			name:    "PV without CSI driver Case",
-			pv:      mock.CreatePVWithoutCSIDriver(2, "pvc", "pv", mock.DefaultNS, "1", "uid", v1.VolumeBound, &mock.FSVolumeMode),
+			pv:      mock.CreatePVWithoutCSIDriver(2, "pvc", "pv", mock.DefaultNS, "1", "uid", v1.VolumeBound, &mock.BlockVolumeMode),
 			wantErr: true,
 		},
 	}
@@ -367,7 +367,7 @@ func TestPVHealthConditionChecker_CheckControllerVolumeHealth(t *testing.T) {
 		{
 			name:         "Abnormal volume gets healthStatus patched",
 			pvc:          mock.CreatePVC(1, 2, "pvc", "uid", mock.DefaultNS, "pv", v1.ClaimBound),
-			pv:           mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "1", "uid", &mock.FSVolumeMode, v1.VolumeBound),
+			pv:           mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "1", "uid", &mock.BlockVolumeMode, v1.VolumeBound),
 			volumeId:     "1",
 			health:       mock.AbnormalVolumeHealth("1"),
 			expectRPC:    true,
@@ -377,7 +377,7 @@ func TestPVHealthConditionChecker_CheckControllerVolumeHealth(t *testing.T) {
 		{
 			name:      "Healthy volume: empty report, no patch",
 			pvc:       mock.CreatePVC(1, 2, "pvc", "uid", mock.DefaultNS, "pv", v1.ClaimBound),
-			pv:        mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "2", "uid", &mock.FSVolumeMode, v1.VolumeBound),
+			pv:        mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "2", "uid", &mock.BlockVolumeMode, v1.VolumeBound),
 			volumeId:  "2",
 			health:    mock.HealthyVolumeHealth("2"),
 			expectRPC: true,
@@ -386,7 +386,7 @@ func TestPVHealthConditionChecker_CheckControllerVolumeHealth(t *testing.T) {
 		{
 			name:      "PV without CSI driver: error, no RPC",
 			pvc:       mock.CreatePVC(1, 2, "pvc", "uid", mock.DefaultNS, "pv", v1.ClaimBound),
-			pv:        mock.CreatePVWithoutCSIDriver(2, "pvc", "pv", mock.DefaultNS, "1", "uid", v1.VolumeBound, &mock.FSVolumeMode),
+			pv:        mock.CreatePVWithoutCSIDriver(2, "pvc", "pv", mock.DefaultNS, "1", "uid", v1.VolumeBound, &mock.BlockVolumeMode),
 			volumeId:  "1",
 			expectRPC: false,
 			wantErr:   true,
@@ -394,7 +394,7 @@ func TestPVHealthConditionChecker_CheckControllerVolumeHealth(t *testing.T) {
 		{
 			name:      "PV not bound: error, no RPC",
 			pvc:       mock.CreatePVC(1, 2, "pvc", "uid", mock.DefaultNS, "pv", v1.ClaimBound),
-			pv:        mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "1", "uid", &mock.FSVolumeMode, v1.VolumePending),
+			pv:        mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "1", "uid", &mock.BlockVolumeMode, v1.VolumePending),
 			volumeId:  "1",
 			expectRPC: false,
 			wantErr:   true,
@@ -402,7 +402,7 @@ func TestPVHealthConditionChecker_CheckControllerVolumeHealth(t *testing.T) {
 		{
 			name:      "PV with empty VolumeHandle: error, no RPC",
 			pvc:       mock.CreatePVC(1, 2, "pvc", "uid", mock.DefaultNS, "pv", v1.ClaimBound),
-			pv:        mock.CreatePVWithNilVolumeHandle(2, "pvc", "pv", mock.DefaultNS, "1", "uid", v1.VolumeBound, &mock.FSVolumeMode),
+			pv:        mock.CreatePVWithNilVolumeHandle(2, "pvc", "pv", mock.DefaultNS, "1", "uid", v1.VolumeBound, &mock.BlockVolumeMode),
 			volumeId:  "1",
 			expectRPC: false,
 			wantErr:   true,
@@ -447,7 +447,7 @@ func Test_DroppedHealthStatusWritesRetryAndRecoverImmediately(t *testing.T) {
 	assert := assert.New(t)
 	checker := createMockPVHealthConditionChecker(t)
 
-	pv := mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "1", "uid", &mock.FSVolumeMode, v1.VolumeBound)
+	pv := mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "1", "uid", &mock.BlockVolumeMode, v1.VolumeBound)
 	pvc := mock.CreatePVC(1, 2, "pvc", "uid", mock.DefaultNS, "pv", v1.ClaimBound)
 	assert.Nil(checker.pvInformer.Informer().GetStore().Add(pv))
 	checker.seedPVC(t, pvc)
