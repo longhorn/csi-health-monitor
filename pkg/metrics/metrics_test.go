@@ -136,3 +136,19 @@ func histogramSampleCount(t *testing.T, reg k8smetrics.KubeRegistry, name string
 	}
 	return total
 }
+
+func TestRecordDroppedStatusWrite(t *testing.T) {
+	m, reg := newRegistered(t)
+
+	m.RecordDroppedStatusWrite()
+	m.RecordDroppedStatusWrite()
+
+	expected := `
+# HELP csi_volume_health_status_writes_dropped_total [ALPHA] Cumulative count of PVC status patches whose healthStatus was dropped by the API server, which indicates the CSIVolumeHealth feature gate is disabled.
+# TYPE csi_volume_health_status_writes_dropped_total counter
+csi_volume_health_status_writes_dropped_total 2
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected), StatusWritesDroppedName); err != nil {
+		t.Errorf("dropped writes counter mismatch: %v", err)
+	}
+}

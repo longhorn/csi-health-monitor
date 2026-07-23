@@ -10,6 +10,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/klog/v2"
 )
 
 const fieldManager = "csi-external-health-monitor-controller"
@@ -24,11 +25,17 @@ func buildHealthStatus(desired []v1.VolumeHealthCondition) *v1.VolumeHealthStatu
 }
 
 // TODO replace with clientset.CoreV1().PersistentVolumeClaims(ns).ApplyStatus
+//
+// The returned bool reports whether the write actually persisted: the API
+// server accepts the patch but drops healthStatus when the CSIVolumeHealth
+// feature gate is disabled. A dropped write must not be recorded as applied,
+// or the checker would believe the conditions were written and go silent for
+// this PVC even after the gate is enabled.
 func (checker *PVHealthConditionChecker) patchPVCHealthStatus(
 	ctx context.Context,
 	pvc *v1.PersistentVolumeClaim,
 	status *v1.VolumeHealthStatus,
-) error {
+) (bool, error) {
 	// A nil/empty status serializes to null, clearing the field server-side.
 	var healthValue interface{}
 	if status != nil && len(status.HealthConditions) > 0 {
@@ -42,12 +49,12 @@ func (checker *PVHealthConditionChecker) patchPVCHealthStatus(
 	}
 	data, err := json.Marshal(patch)
 	if err != nil {
-		return fmt.Errorf("failed to marshal health status patch for PVC %s/%s: %w", pvc.Namespace, pvc.Name, err)
+		return false, fmt.Errorf("failed to marshal health status patch for PVC %s/%s: %w", pvc.Namespace, pvc.Name, err)
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, checker.timeout)
 	defer cancel()
-	_, err = checker.k8sClient.CoreV1().PersistentVolumeClaims(pvc.Namespace).Patch(
+	updated, err := checker.k8sClient.CoreV1().PersistentVolumeClaims(pvc.Namespace).Patch(
 		ctx,
 		pvc.Name,
 		types.MergePatchType,
@@ -56,9 +63,24 @@ func (checker *PVHealthConditionChecker) patchPVCHealthStatus(
 		"status",
 	)
 	if err != nil {
-		return fmt.Errorf("failed to patch health status for PVC %s/%s: %w", pvc.Namespace, pvc.Name, err)
+		return false, fmt.Errorf("failed to patch health status for PVC %s/%s: %w", pvc.Namespace, pvc.Name, err)
 	}
-	return nil
+
+	if healthValue == nil {
+		// A clearing patch cannot probe the feature gate.
+		return true, nil
+	}
+	if updated.Status.HealthStatus == nil {
+		checker.recordDroppedStatusWrite()
+		if checker.fieldDropped.CompareAndSwap(false, true) {
+			klog.FromContext(ctx).Info("The API server dropped the healthStatus field, the CSIVolumeHealth feature gate appears to be disabled; health status will not be visible on PVCs", "pvc", klog.KObj(pvc))
+		}
+		return false, nil
+	}
+	if checker.fieldDropped.CompareAndSwap(true, false) {
+		klog.FromContext(ctx).Info("The API server is persisting the healthStatus field again", "pvc", klog.KObj(pvc))
+	}
+	return true, nil
 }
 
 func pvcHealthConditions(pvc *v1.PersistentVolumeClaim) []v1.VolumeHealthCondition {

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	informerV1 "k8s.io/client-go/informers/core/v1"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
@@ -440,4 +441,55 @@ func TestPVHealthConditionChecker_CheckControllerVolumeHealth(t *testing.T) {
 			}
 		})
 	}
+}
+
+func Test_DroppedHealthStatusWritesRetryAndRecoverImmediately(t *testing.T) {
+	assert := assert.New(t)
+	checker := createMockPVHealthConditionChecker(t)
+
+	pv := mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "1", "uid", &mock.FSVolumeMode, v1.VolumeBound)
+	pvc := mock.CreatePVC(1, 2, "pvc", "uid", mock.DefaultNS, "pv", v1.ClaimBound)
+	assert.Nil(checker.pvInformer.Informer().GetStore().Add(pv))
+	checker.seedPVC(t, pvc)
+
+	// While dropField is true the "API server" accepts status patches but
+	// returns the PVC without healthStatus, like a disabled CSIVolumeHealth gate.
+	dropField := true
+	checker.fakeClient.PrependReactor("patch", "persistentvolumeclaims", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		if !dropField {
+			return false, nil, nil
+		}
+		return true, pvc.DeepCopy(), nil
+	})
+
+	_, ctx := ktesting.NewTestContext(t)
+	abnormal := &csi.ControllerGetVolumeHealthResponse{VolumeHealth: mock.AbnormalVolumeHealth("1")}
+	checker.csiControllerServer.SetGetVolumeHealth("1", abnormal, nil)
+
+	// Cycle 1: the write is attempted and comes back without the field.
+	// It must not be recorded as applied.
+	assert.Nil(checker.pvHealthConditionChecker.CheckControllerVolumeHealth(ctx, pv))
+	patched, _ := healthStatusPatched(checker.fakeClient.Actions())
+	assert.True(patched, "first cycle must attempt the write")
+	assert.False(checker.pvHealthConditionChecker.knownUnhealthy["1"], "a dropped write must not be recorded as applied")
+	assert.True(checker.pvHealthConditionChecker.fieldDropped.Load(), "dropped state must be tracked for logging")
+
+	// Cycle 2: still dropped. The write is simply retried at normal cadence.
+	checker.fakeClient.ClearActions()
+	assert.Nil(checker.pvHealthConditionChecker.CheckControllerVolumeHealth(ctx, pv))
+	patched, _ = healthStatusPatched(checker.fakeClient.Actions())
+	assert.True(patched, "dropped writes keep being retried")
+	assert.False(checker.pvHealthConditionChecker.knownUnhealthy["1"], "still not recorded while dropped")
+	assert.Len(checker.csiControllerServer.GetVolumeHealthRequests(), 2, "probing continues throughout")
+
+	// Cycle 3: the gate is enabled. The very next write persists and is
+	// recorded; recovery is immediate.
+	dropField = false
+	checker.fakeClient.ClearActions()
+	assert.Nil(checker.pvHealthConditionChecker.CheckControllerVolumeHealth(ctx, pv))
+	patched, abnormalPatch := healthStatusPatched(checker.fakeClient.Actions())
+	assert.True(patched, "write must go out as soon as the gate is enabled")
+	assert.True(abnormalPatch, "the write must carry the conditions")
+	assert.True(checker.pvHealthConditionChecker.knownUnhealthy["1"], "persisted write must be recorded")
+	assert.False(checker.pvHealthConditionChecker.fieldDropped.Load(), "recovery must clear the dropped state")
 }

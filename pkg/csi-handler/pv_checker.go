@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc"
@@ -58,6 +59,11 @@ type PVHealthConditionChecker struct {
 	// not observed our status patch yet. The PVC status remains the source of truth:
 	// entries only apply to the resourceVersion they were computed from.
 	lastApplied map[string]appliedHealthStatus
+
+	// fieldDropped tracks whether the API server is currently dropping
+	// healthStatus writes (CSIVolumeHealth disabled), so the condition is
+	// logged on transitions instead of on every write.
+	fieldDropped atomic.Bool
 }
 
 type appliedHealthStatus struct {
@@ -212,9 +218,14 @@ func (checker *PVHealthConditionChecker) reconcileAndTrack(ctx context.Context, 
 	prev := checker.currentHealthConditions(pvcKey, pvc)
 
 	if !conditionsEqual(prev, desired) {
-		if err := checker.patchPVCHealthStatus(ctx, pvc, buildHealthStatus(desired)); err != nil {
+		persisted, err := checker.patchPVCHealthStatus(ctx, pvc, buildHealthStatus(desired))
+		if err != nil {
 			// Leave bookkeeping untouched so the next cycle retries the same transition.
 			return err
+		}
+		if !persisted {
+			// The API server dropped the field; treat like a failed write.
+			return nil
 		}
 	}
 
@@ -278,6 +289,14 @@ func (checker *PVHealthConditionChecker) observeProbe(method string, start time.
 		return
 	}
 	checker.metrics.ObserveProbe(method, time.Since(start).Seconds(), err)
+}
+
+// Safe when metrics is nil.
+func (checker *PVHealthConditionChecker) recordDroppedStatusWrite() {
+	if checker.metrics == nil {
+		return
+	}
+	checker.metrics.RecordDroppedStatusWrite()
 }
 
 // One gauge series per (status, reason) while unhealthy; all removed on recovery. Safe when

@@ -8,6 +8,7 @@ const (
 	ProbeDurationName                = "csi_volume_health_probe_duration_seconds"
 	ProbeTotalName                   = "csi_volume_health_probe_total"
 	ControllerVolumeHealthStatusName = "csi_controller_volume_health_status"
+	StatusWritesDroppedName          = "csi_volume_health_status_writes_dropped_total"
 )
 
 const (
@@ -30,9 +31,10 @@ const (
 )
 
 type Metrics struct {
-	probeDuration   *k8smetrics.HistogramVec
-	probeTotal      *k8smetrics.CounterVec
-	volumeHealthVec *k8smetrics.GaugeVec
+	probeDuration       *k8smetrics.HistogramVec
+	probeTotal          *k8smetrics.CounterVec
+	volumeHealthVec     *k8smetrics.GaugeVec
+	statusWritesDropped *k8smetrics.Counter
 }
 
 func New() *Metrics {
@@ -62,6 +64,13 @@ func New() *Metrics {
 			},
 			[]string{labelNamespace, labelPVC, labelStatus, labelReason},
 		),
+		statusWritesDropped: k8smetrics.NewCounter(
+			&k8smetrics.CounterOpts{
+				Name:           StatusWritesDroppedName,
+				Help:           "Cumulative count of PVC status patches whose healthStatus was dropped by the API server, which indicates the CSIVolumeHealth feature gate is disabled.",
+				StabilityLevel: k8smetrics.ALPHA,
+			},
+		),
 	}
 }
 
@@ -69,6 +78,11 @@ func (m *Metrics) Register(registry k8smetrics.KubeRegistry) {
 	registry.MustRegister(m.probeDuration)
 	registry.MustRegister(m.probeTotal)
 	registry.MustRegister(m.volumeHealthVec)
+	registry.MustRegister(m.statusWritesDropped)
+}
+
+func (m *Metrics) RecordDroppedStatusWrite() {
+	m.statusWritesDropped.Inc()
 }
 
 func (m *Metrics) ObserveProbe(method string, durationSeconds float64, err error) {
