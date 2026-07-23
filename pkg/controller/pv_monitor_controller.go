@@ -212,15 +212,27 @@ func (ctrl *PVMonitorController) AddPVsToQueue() error {
 		if pv.Spec.CSI == nil || pv.Spec.CSI.Driver != ctrl.driverName {
 			continue
 		}
+		if pv.Status.Phase != v1.VolumeBound || pv.DeletionTimestamp != nil {
+			continue
+		}
+		ctrl.Lock()
 		if !ctrl.pvEnqueued[pv.Name] {
-			ctrl.Lock()
 			ctrl.pvEnqueued[pv.Name] = true
 			ctrl.pvQueue.Add(pv.Name)
-			ctrl.Unlock()
 		}
+		ctrl.Unlock()
 	}
 
 	return nil
+}
+
+// forgetPV takes a PV out of the monitoring loop so that a later
+// AddPVsToQueue pass can pick it up again, e.g. once a pending PV
+// becomes bound.
+func (ctrl *PVMonitorController) forgetPV(pvName string) {
+	ctrl.Lock()
+	delete(ctrl.pvEnqueued, pvName)
+	ctrl.Unlock()
 }
 
 func (ctrl *PVMonitorController) checkPVWorker(ctx context.Context) {
@@ -239,10 +251,7 @@ func (ctrl *PVMonitorController) checkPVWorker(ctx context.Context) {
 	if err != nil {
 		if apierrs.IsNotFound(err) {
 			// PV was deleted in the meantime, ignore.
-			ctrl.Lock()
-			// delete pv from cache here so that we do not need to handle pv deletion events
-			delete(ctrl.pvEnqueued, pvName)
-			ctrl.Unlock()
+			ctrl.forgetPV(pvName)
 			logger.V(3).Info("PV deleted, ignoring", "pv", pvName)
 			return
 		}
@@ -253,11 +262,13 @@ func (ctrl *PVMonitorController) checkPVWorker(ctx context.Context) {
 
 	if pv.DeletionTimestamp != nil {
 		logger.Info("PV is being deleted now, skip checking health condition", "pv", pv.Name)
+		ctrl.forgetPV(pvName)
 		return
 	}
 
 	if pv.Status.Phase != v1.VolumeBound {
 		logger.Info("PV status is not bound, remove it from the queue", "pv", pv.Name)
+		ctrl.forgetPV(pvName)
 		return
 	}
 
