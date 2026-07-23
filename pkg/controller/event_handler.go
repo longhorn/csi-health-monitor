@@ -51,7 +51,9 @@ func (ctrl *PVMonitorController) pvDeleted(obj interface{}) {
 	}
 
 	ctrl.forgetPV(pv.Name)
-	ctrl.pvChecker.ForgetVolume(pv)
+	if pv.Spec.ClaimRef != nil {
+		ctrl.pvChecker.ForgetPVC(pv.Spec.ClaimRef.Namespace, pv.Spec.ClaimRef.Name)
+	}
 }
 
 func (ctrl *PVMonitorController) pvcDeleted(obj interface{}) {

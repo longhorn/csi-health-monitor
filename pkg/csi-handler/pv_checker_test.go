@@ -37,14 +37,13 @@ func createMockPVHealthConditionChecker(t *testing.T) *MockPVHealthConditionChec
 	handler := NewCSIPVHandler(csiConn, 15*time.Second)
 	return &MockPVHealthConditionChecker{
 		pvHealthConditionChecker: &PVHealthConditionChecker{
-			driverName:     mock.DriverName,
-			timeout:        15 * time.Second,
-			k8sClient:      k8sClient,
-			pvcLister:      informer.Core().V1().PersistentVolumeClaims().Lister(),
-			pvLister:       informer.Core().V1().PersistentVolumes().Lister(),
-			csiPVHandler:   handler,
-			knownUnhealthy: map[string]bool{},
-			lastApplied:    map[string]appliedHealthStatus{},
+			driverName:   mock.DriverName,
+			timeout:      15 * time.Second,
+			k8sClient:    k8sClient,
+			pvcLister:    informer.Core().V1().PersistentVolumeClaims().Lister(),
+			pvLister:     informer.Core().V1().PersistentVolumes().Lister(),
+			csiPVHandler: handler,
+			volumes:      map[string]volumeState{},
 		},
 		pvcInformer:         informer.Core().V1().PersistentVolumeClaims(),
 		pvInformer:          informer.Core().V1().PersistentVolumes(),
@@ -87,6 +86,14 @@ func healthStatusPatched(actions []k8stesting.Action) (patched bool, abnormal bo
 
 func setPVCHealthStatus(pvc *v1.PersistentVolumeClaim, health *csi.VolumeHealth) {
 	pvc.Status.HealthStatus = buildHealthStatus(volumeHealthToResult(health).Conditions)
+}
+
+// trackedUnhealthy reports whether the checker currently remembers the PVC's
+// volume as unhealthy.
+func trackedUnhealthy(checker *PVHealthConditionChecker, namespace, name string) bool {
+	checker.volumeStateMu.Lock()
+	defer checker.volumeStateMu.Unlock()
+	return checker.volumes[namespace+"/"+name].unhealthy
 }
 
 func TestPVHealthConditionChecker_CheckControllerListVolumeHealth(t *testing.T) {
@@ -184,7 +191,7 @@ func Test_ListRecoveryUsesGetForMissingUnhealthyVolume(t *testing.T) {
 	abnormalOut := &csi.ControllerListVolumeHealthResponse{Entries: []*csi.VolumeHealth{mock.AbnormalVolumeHealth("1")}}
 	checker.csiControllerServer.SetListVolumeHealth(abnormalOut, nil)
 	assert.Nil(checker.pvHealthConditionChecker.CheckControllerListVolumeHealth(ctx))
-	assert.True(checker.pvHealthConditionChecker.knownUnhealthy["1"])
+	assert.True(trackedUnhealthy(checker.pvHealthConditionChecker, mock.DefaultNS, "pvc"))
 	assert.Empty(checker.csiControllerServer.GetVolumeHealthRequests(), "no Get confirm needed while the volume is present in the list")
 
 	// Cycle 2: absent from list, but a single Get confirms healthy -> cleared immediately.
@@ -203,7 +210,7 @@ func Test_ListRecoveryUsesGetForMissingUnhealthyVolume(t *testing.T) {
 	patched, abnormal := healthStatusPatched(checker.fakeClient.Actions())
 	assert.True(patched, "should clear after a single Get confirmation")
 	assert.False(abnormal, "clearing patch must not carry conditions")
-	assert.False(checker.pvHealthConditionChecker.knownUnhealthy["1"], "no longer tracked unhealthy after Get confirm")
+	assert.False(trackedUnhealthy(checker.pvHealthConditionChecker, mock.DefaultNS, "pvc"), "no longer tracked unhealthy after Get confirm")
 }
 
 func Test_ListAbsentVolumeWithStalePVCHealthStatusUsesGetAfterRestart(t *testing.T) {
@@ -232,7 +239,7 @@ func Test_ListAbsentVolumeWithStalePVCHealthStatusUsesGetAfterRestart(t *testing
 	patched, abnormal := healthStatusPatched(checker.fakeClient.Actions())
 	assert.True(patched, "stale healthStatus from before restart must be cleared")
 	assert.False(abnormal, "clearing patch must not carry conditions")
-	assert.False(checker.pvHealthConditionChecker.knownUnhealthy["1"], "healthy Get result must not leave volume tracked unhealthy")
+	assert.False(trackedUnhealthy(checker.pvHealthConditionChecker, mock.DefaultNS, "pvc"), "healthy Get result must not leave volume tracked unhealthy")
 }
 
 func Test_FailedRPCIsNotRecovery(t *testing.T) {
@@ -250,7 +257,7 @@ func Test_FailedRPCIsNotRecovery(t *testing.T) {
 	abnormal := &csi.ControllerGetVolumeHealthResponse{VolumeHealth: mock.AbnormalVolumeHealth("1")}
 	checker.csiControllerServer.SetGetVolumeHealth("1", abnormal, nil)
 	assert.Nil(checker.pvHealthConditionChecker.CheckControllerVolumeHealth(ctx, pv))
-	assert.True(checker.pvHealthConditionChecker.knownUnhealthy["1"])
+	assert.True(trackedUnhealthy(checker.pvHealthConditionChecker, mock.DefaultNS, "pvc"))
 
 	// Now the RPC fails. The volume must remain tracked unhealthy and no patch issued.
 	checker.fakeClient.ClearActions()
@@ -263,7 +270,7 @@ func Test_FailedRPCIsNotRecovery(t *testing.T) {
 
 	patched, _ := healthStatusPatched(checker.fakeClient.Actions())
 	assert.False(patched, "failed RPC must not issue a recovery patch")
-	assert.True(checker.pvHealthConditionChecker.knownUnhealthy["1"], "failed RPC must not clear unhealthy state")
+	assert.True(trackedUnhealthy(checker.pvHealthConditionChecker, mock.DefaultNS, "pvc"), "failed RPC must not clear unhealthy state")
 }
 
 func Test_ConditionTransition(t *testing.T) {
@@ -298,7 +305,7 @@ func Test_ConditionTransition(t *testing.T) {
 	patched, abnormal := healthStatusPatched(checker.fakeClient.Actions())
 	assert.True(patched, "a condition transition A->B must issue a patch")
 	assert.True(abnormal, "the transition patch must carry the new condition")
-	assert.True(checker.pvHealthConditionChecker.knownUnhealthy["1"], "still unhealthy after transition")
+	assert.True(trackedUnhealthy(checker.pvHealthConditionChecker, mock.DefaultNS, "pvc"), "still unhealthy after transition")
 }
 
 func Test_GetClearsStalePVCHealthStatusAfterRestart(t *testing.T) {
@@ -324,7 +331,7 @@ func Test_GetClearsStalePVCHealthStatusAfterRestart(t *testing.T) {
 	patched, abnormal := healthStatusPatched(checker.fakeClient.Actions())
 	assert.True(patched, "stale healthStatus from before restart must be cleared")
 	assert.False(abnormal, "clearing patch must not carry conditions")
-	assert.False(checker.pvHealthConditionChecker.knownUnhealthy["1"], "healthy Get result must not leave volume tracked unhealthy")
+	assert.False(trackedUnhealthy(checker.pvHealthConditionChecker, mock.DefaultNS, "pvc"), "healthy Get result must not leave volume tracked unhealthy")
 }
 
 func TestPVHealthConditionChecker_GetVolumeHandle(t *testing.T) {
@@ -489,7 +496,7 @@ func Test_DroppedHealthStatusWritesRetryAndRecoverImmediately(t *testing.T) {
 	assert.Nil(checker.pvHealthConditionChecker.CheckControllerVolumeHealth(ctx, pv))
 	patched, _ := healthStatusPatched(checker.fakeClient.Actions())
 	assert.True(patched, "first cycle must attempt the write")
-	assert.False(checker.pvHealthConditionChecker.knownUnhealthy["1"], "a dropped write must not be recorded as applied")
+	assert.False(trackedUnhealthy(checker.pvHealthConditionChecker, mock.DefaultNS, "pvc"), "a dropped write must not be recorded as applied")
 	assert.True(checker.pvHealthConditionChecker.fieldDropped.Load(), "dropped state must be tracked for logging")
 
 	// Cycle 2: still dropped. The write is simply retried at normal cadence.
@@ -497,7 +504,7 @@ func Test_DroppedHealthStatusWritesRetryAndRecoverImmediately(t *testing.T) {
 	assert.Nil(checker.pvHealthConditionChecker.CheckControllerVolumeHealth(ctx, pv))
 	patched, _ = healthStatusPatched(checker.fakeClient.Actions())
 	assert.True(patched, "dropped writes keep being retried")
-	assert.False(checker.pvHealthConditionChecker.knownUnhealthy["1"], "still not recorded while dropped")
+	assert.False(trackedUnhealthy(checker.pvHealthConditionChecker, mock.DefaultNS, "pvc"), "still not recorded while dropped")
 	assert.Len(checker.csiControllerServer.GetVolumeHealthRequests(), 2, "probing continues throughout")
 
 	// Cycle 3: the gate is enabled. The very next write persists and is
@@ -508,11 +515,11 @@ func Test_DroppedHealthStatusWritesRetryAndRecoverImmediately(t *testing.T) {
 	patched, abnormalPatch := healthStatusPatched(checker.fakeClient.Actions())
 	assert.True(patched, "write must go out as soon as the gate is enabled")
 	assert.True(abnormalPatch, "the write must carry the conditions")
-	assert.True(checker.pvHealthConditionChecker.knownUnhealthy["1"], "persisted write must be recorded")
+	assert.True(trackedUnhealthy(checker.pvHealthConditionChecker, mock.DefaultNS, "pvc"), "persisted write must be recorded")
 	assert.False(checker.pvHealthConditionChecker.fieldDropped.Load(), "recovery must clear the dropped state")
 }
 
-func Test_ForgetVolumeDropsCheckerState(t *testing.T) {
+func Test_ForgetPVCDropsCheckerState(t *testing.T) {
 	assert := assert.New(t)
 	checker := createMockPVHealthConditionChecker(t)
 
@@ -531,14 +538,13 @@ func Test_ForgetVolumeDropsCheckerState(t *testing.T) {
 	checker.csiControllerServer.SetGetVolumeHealth("1", abnormal, nil)
 	assert.Nil(checker.pvHealthConditionChecker.CheckControllerVolumeHealth(ctx, pv))
 
-	assert.True(checker.pvHealthConditionChecker.knownUnhealthy["1"])
-	assert.Len(checker.pvHealthConditionChecker.lastApplied, 1)
+	assert.True(trackedUnhealthy(checker.pvHealthConditionChecker, mock.DefaultNS, "pvc"))
+	assert.Len(checker.pvHealthConditionChecker.volumes, 1)
 	assert.Equal(1, gaugeSeriesCount(t, reg))
 
-	checker.pvHealthConditionChecker.ForgetVolume(pv)
+	checker.pvHealthConditionChecker.ForgetPVC(mock.DefaultNS, "pvc")
 
-	assert.Empty(checker.pvHealthConditionChecker.knownUnhealthy, "recovery tracking must be dropped")
-	assert.Empty(checker.pvHealthConditionChecker.lastApplied, "write-through cache must be dropped")
+	assert.Empty(checker.pvHealthConditionChecker.volumes, "tracked volume state must be dropped")
 	assert.Equal(0, gaugeSeriesCount(t, reg), "the PVC's metric series must be removed")
 }
 
