@@ -22,6 +22,7 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/klog/v2"
 
 	"google.golang.org/grpc"
 
@@ -60,7 +61,7 @@ func (handler *csiPVHandler) ControllerListVolumeHealth(ctx context.Context) (ma
 		}
 
 		for _, vh := range rsp.GetEntries() {
-			p[vh.GetVolumeId()] = volumeHealthToResult(vh)
+			p[vh.GetVolumeId()] = volumeHealthToResult(ctx, vh)
 		}
 
 		token = rsp.GetNextToken()
@@ -94,10 +95,10 @@ func (handler *csiPVHandler) ControllerGetVolumeHealth(ctx context.Context, volu
 		return nil, err
 	}
 
-	return volumeHealthToResult(res.GetVolumeHealth()), nil
+	return volumeHealthToResult(ctx, res.GetVolumeHealth()), nil
 }
 
-func volumeHealthToResult(vh *csi.VolumeHealth) *VolumeHealthResult {
+func volumeHealthToResult(ctx context.Context, vh *csi.VolumeHealth) *VolumeHealthResult {
 	result := &VolumeHealthResult{}
 	if vh == nil {
 		return result
@@ -106,8 +107,16 @@ func volumeHealthToResult(vh *csi.VolumeHealth) *VolumeHealthResult {
 		if entry == nil {
 			continue
 		}
+		status, ok := mapVolumeHealthErrorType(entry.GetStatus())
+		if !ok {
+			// The CSI spec requires COs to ignore health error types they do
+			// not know about, acting only on the recognized entries. The
+			// kubelet does the same on the node side.
+			klog.FromContext(ctx).V(4).Info("Ignoring unknown volume health error type", "volume", vh.GetVolumeId(), "status", entry.GetStatus(), "reason", entry.GetReason())
+			continue
+		}
 		result.Conditions = append(result.Conditions, v1.VolumeHealthCondition{
-			Status:  mapVolumeHealthErrorType(entry.GetStatus()),
+			Status:  status,
 			Reason:  entry.GetReason(),
 			Message: entry.GetMessage(),
 		})
@@ -115,15 +124,15 @@ func volumeHealthToResult(vh *csi.VolumeHealth) *VolumeHealthResult {
 	return result
 }
 
-func mapVolumeHealthErrorType(t csi.VolumeHealthErrorType) v1.VolumeHealthStatusType {
+func mapVolumeHealthErrorType(t csi.VolumeHealthErrorType) (v1.VolumeHealthStatusType, bool) {
 	switch t {
 	case csi.VolumeHealthErrorType_INACCESSIBLE:
-		return v1.VolumeHealthInaccessible
+		return v1.VolumeHealthInaccessible, true
 	case csi.VolumeHealthErrorType_DATA_LOSS:
-		return v1.VolumeHealthDataLoss
+		return v1.VolumeHealthDataLoss, true
 	case csi.VolumeHealthErrorType_DEGRADED:
-		return v1.VolumeHealthDegraded
+		return v1.VolumeHealthDegraded, true
 	default:
-		return v1.VolumeHealthDegraded
+		return "", false
 	}
 }

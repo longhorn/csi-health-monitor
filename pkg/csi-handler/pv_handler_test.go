@@ -159,22 +159,53 @@ func Test_csiPVHandler_ControllerGetVolumeHealth(t *testing.T) {
 
 func Test_mapVolumeHealthErrorType(t *testing.T) {
 	tests := []struct {
-		name string
-		in   csi.VolumeHealthErrorType
-		want v1.VolumeHealthStatusType
+		name   string
+		in     csi.VolumeHealthErrorType
+		want   v1.VolumeHealthStatusType
+		wantOK bool
 	}{
-		{"inaccessible", csi.VolumeHealthErrorType_INACCESSIBLE, v1.VolumeHealthInaccessible},
-		{"dataloss", csi.VolumeHealthErrorType_DATA_LOSS, v1.VolumeHealthDataLoss},
-		{"degraded", csi.VolumeHealthErrorType_DEGRADED, v1.VolumeHealthDegraded},
-		// Unknown / future enum values must not be treated as healthy; they surface as Degraded.
-		{"unknown", csi.VolumeHealthErrorType_UNKNOWN_VOLUME_HEALTH_TYPE, v1.VolumeHealthDegraded},
+		{"inaccessible", csi.VolumeHealthErrorType_INACCESSIBLE, v1.VolumeHealthInaccessible, true},
+		{"dataloss", csi.VolumeHealthErrorType_DATA_LOSS, v1.VolumeHealthDataLoss, true},
+		{"degraded", csi.VolumeHealthErrorType_DEGRADED, v1.VolumeHealthDegraded, true},
+		// The CSI spec requires ignoring values the CO does not know about.
+		{"unknown", csi.VolumeHealthErrorType_UNKNOWN_VOLUME_HEALTH_TYPE, "", false},
+		{"future", csi.VolumeHealthErrorType(99), "", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := mapVolumeHealthErrorType(tt.in); got != tt.want {
-				t.Errorf("mapVolumeHealthErrorType(%v) = %v, want %v", tt.in, got, tt.want)
+			got, ok := mapVolumeHealthErrorType(tt.in)
+			if got != tt.want || ok != tt.wantOK {
+				t.Errorf("mapVolumeHealthErrorType(%v) = (%v, %v), want (%v, %v)", tt.in, got, ok, tt.want, tt.wantOK)
 			}
 		})
+	}
+}
+
+// Per the CSI spec, entries with unrecognized error types are skipped while
+// the recognized ones are still acted on, and this matches the kubelet.
+func Test_volumeHealthToResultIgnoresUnknownEntries(t *testing.T) {
+	mixed := &csi.VolumeHealth{
+		VolumeId: "1",
+		HealthStatuses: []*csi.VolumeHealth_VolumeHealthEntry{
+			{Status: csi.VolumeHealthErrorType_DEGRADED, Reason: "SlowIO"},
+			{Status: csi.VolumeHealthErrorType(99), Reason: "FromTheFuture"},
+		},
+	}
+	got := volumeHealthToResult(context.Background(), mixed)
+	want := []v1.VolumeHealthCondition{{Status: v1.VolumeHealthDegraded, Reason: "SlowIO"}}
+	if !reflect.DeepEqual(got.Conditions, want) {
+		t.Errorf("mixed entries = %v, want %v", got.Conditions, want)
+	}
+
+	unknownOnly := &csi.VolumeHealth{
+		VolumeId: "1",
+		HealthStatuses: []*csi.VolumeHealth_VolumeHealthEntry{
+			{Status: csi.VolumeHealthErrorType(99), Reason: "FromTheFuture"},
+		},
+	}
+	got = volumeHealthToResult(context.Background(), unknownOnly)
+	if len(got.Conditions) != 0 {
+		t.Errorf("unknown-only entries = %v, want none", got.Conditions)
 	}
 }
 

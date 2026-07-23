@@ -1,6 +1,7 @@
 package csi_handler
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -85,7 +86,7 @@ func healthStatusPatched(actions []k8stesting.Action) (patched bool, abnormal bo
 }
 
 func setPVCHealthStatus(pvc *v1.PersistentVolumeClaim, health *csi.VolumeHealth) {
-	pvc.Status.HealthStatus = buildHealthStatus(volumeHealthToResult(health).Conditions)
+	pvc.Status.HealthStatus = buildHealthStatus(volumeHealthToResult(context.Background(), health).Conditions)
 }
 
 // trackedUnhealthy reports whether the checker currently remembers the PVC's
