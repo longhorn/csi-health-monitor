@@ -80,7 +80,7 @@ func NewPVHealthConditionChecker(
 		pvcLister:      pvcLister,
 		pvLister:       pvLister,
 		timeout:        timeout,
-		csiPVHandler:   NewCSIPVHandler(conn),
+		csiPVHandler:   NewCSIPVHandler(conn, timeout),
 		metrics:        healthMetrics,
 		knownUnhealthy: map[string]bool{},
 		lastApplied:    map[string]appliedHealthStatus{},
@@ -90,9 +90,6 @@ func NewPVHealthConditionChecker(
 // A previously-unhealthy volume absent from a complete list cycle is resolved with
 // ControllerGetVolumeHealth. The CSI spec requires Get when List is supported.
 func (checker *PVHealthConditionChecker) CheckControllerListVolumeHealth(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, checker.timeout)
-	defer cancel()
-
 	// A failed list RPC is not a recovery: leave stored conditions
 	// untouched and try again next cycle.
 	start := time.Now()
@@ -179,9 +176,6 @@ func (checker *PVHealthConditionChecker) CheckControllerVolumeHealth(ctx context
 	if pv.Status.Phase != v1.VolumeBound {
 		return fmt.Errorf("PV: %s status is not bound", pv.Name)
 	}
-
-	ctx, cancel := context.WithTimeout(ctx, checker.timeout)
-	defer cancel()
 
 	logger := klog.FromContext(ctx)
 	volumeHandle, err := checker.GetVolumeHandle(pv)

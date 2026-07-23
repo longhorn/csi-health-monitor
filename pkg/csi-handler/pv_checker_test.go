@@ -31,7 +31,7 @@ func createMockPVHealthConditionChecker(t *testing.T) *MockPVHealthConditionChec
 	k8sClient, informer := mock.FakeK8s()
 	drv, csiConn := mock.StartFakeDriver(t)
 
-	handler := NewCSIPVHandler(csiConn)
+	handler := NewCSIPVHandler(csiConn, 15*time.Second)
 	return &MockPVHealthConditionChecker{
 		pvHealthConditionChecker: &PVHealthConditionChecker{
 			driverName:     mock.DriverName,

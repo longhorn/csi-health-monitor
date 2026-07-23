@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc"
@@ -39,13 +40,16 @@ type FakeControllerServer struct {
 
 	mu sync.Mutex
 
-	listResp *csi.ControllerListVolumeHealthResponse
-	listErr  error
-	listReqs []*csi.ControllerListVolumeHealthRequest
+	listResp      *csi.ControllerListVolumeHealthResponse
+	listPages     map[string]*csi.ControllerListVolumeHealthResponse
+	listErr       error
+	listReqs      []*csi.ControllerListVolumeHealthRequest
+	listDeadlines []time.Time
 
-	getResp map[string]*csi.ControllerGetVolumeHealthResponse
-	getErr  map[string]error
-	getReqs []*csi.ControllerGetVolumeHealthRequest
+	getResp      map[string]*csi.ControllerGetVolumeHealthResponse
+	getErr       map[string]error
+	getReqs      []*csi.ControllerGetVolumeHealthRequest
+	getDeadlines []time.Time
 }
 
 var _ csi.ControllerServer = &FakeControllerServer{}
@@ -55,6 +59,19 @@ func (f *FakeControllerServer) SetListVolumeHealth(resp *csi.ControllerListVolum
 	defer f.mu.Unlock()
 	f.listResp = resp
 	f.listErr = err
+}
+
+// SetListVolumeHealthPages serves a paginated listing: the first page answers
+// an empty starting token and each page's NextToken selects the next one.
+func (f *FakeControllerServer) SetListVolumeHealthPages(pages ...*csi.ControllerListVolumeHealthResponse) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.listPages = map[string]*csi.ControllerListVolumeHealthResponse{}
+	token := ""
+	for _, page := range pages {
+		f.listPages[token] = page
+		token = page.GetNextToken()
+	}
 }
 
 func (f *FakeControllerServer) SetGetVolumeHealth(volumeID string, resp *csi.ControllerGetVolumeHealthResponse, err error) {
@@ -86,12 +103,39 @@ func (f *FakeControllerServer) GetVolumeHealthRequests() []*csi.ControllerGetVol
 	return out
 }
 
+// ListVolumeHealthDeadlines returns the context deadline each received list
+// request carried; the zero time means the request had no deadline.
+func (f *FakeControllerServer) ListVolumeHealthDeadlines() []time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]time.Time, len(f.listDeadlines))
+	copy(out, f.listDeadlines)
+	return out
+}
+
+// GetVolumeHealthDeadlines is ListVolumeHealthDeadlines for get requests.
+func (f *FakeControllerServer) GetVolumeHealthDeadlines() []time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]time.Time, len(f.getDeadlines))
+	copy(out, f.getDeadlines)
+	return out
+}
+
 func (f *FakeControllerServer) ControllerListVolumeHealth(ctx context.Context, req *csi.ControllerListVolumeHealthRequest) (*csi.ControllerListVolumeHealthResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.listReqs = append(f.listReqs, req)
+	deadline, _ := ctx.Deadline()
+	f.listDeadlines = append(f.listDeadlines, deadline)
 	if f.listErr != nil {
 		return nil, f.listErr
+	}
+	if f.listPages != nil {
+		if resp, ok := f.listPages[req.GetStartingToken()]; ok {
+			return resp, nil
+		}
+		return nil, status.Error(codes.FailedPrecondition, fmt.Sprintf("fake driver: no list page configured for starting token %q", req.GetStartingToken()))
 	}
 	if f.listResp == nil {
 		return nil, status.Error(codes.FailedPrecondition, "fake driver: no ControllerListVolumeHealth response configured")
@@ -103,6 +147,8 @@ func (f *FakeControllerServer) ControllerGetVolumeHealth(ctx context.Context, re
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.getReqs = append(f.getReqs, req)
+	deadline, _ := ctx.Deadline()
+	f.getDeadlines = append(f.getDeadlines, deadline)
 	if err := f.getErr[req.GetVolumeId()]; err != nil {
 		return nil, err
 	}

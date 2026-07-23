@@ -19,6 +19,7 @@ package csi_handler
 import (
 	"context"
 	"fmt"
+	"time"
 
 	v1 "k8s.io/api/core/v1"
 
@@ -31,11 +32,14 @@ var _ CSIHandler = &csiPVHandler{}
 
 type csiPVHandler struct {
 	controllerClient csi.ControllerClient
+	// timeout bounds each individual CSI RPC, not a whole reconciliation cycle.
+	timeout time.Duration
 }
 
-func NewCSIPVHandler(conn *grpc.ClientConn) CSIHandler {
+func NewCSIPVHandler(conn *grpc.ClientConn, timeout time.Duration) CSIHandler {
 	return &csiPVHandler{
 		controllerClient: csi.NewControllerClient(conn),
+		timeout:          timeout,
 	}
 }
 
@@ -50,9 +54,7 @@ func (handler *csiPVHandler) ControllerListVolumeHealth(ctx context.Context) (ma
 
 	token := ""
 	for {
-		rsp, err := handler.controllerClient.ControllerListVolumeHealth(ctx, &csi.ControllerListVolumeHealthRequest{
-			StartingToken: token,
-		})
+		rsp, err := handler.listVolumeHealthPage(ctx, token)
 		if err != nil {
 			return nil, fmt.Errorf("failed to list volume health: %v", err)
 		}
@@ -69,9 +71,21 @@ func (handler *csiPVHandler) ControllerListVolumeHealth(ctx context.Context) (ma
 	return p, nil
 }
 
+// Each page gets its own deadline so a large paginated listing is not
+// squeezed into a single timeout.
+func (handler *csiPVHandler) listVolumeHealthPage(ctx context.Context, token string) (*csi.ControllerListVolumeHealthResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, handler.timeout)
+	defer cancel()
+	return handler.controllerClient.ControllerListVolumeHealth(ctx, &csi.ControllerListVolumeHealthRequest{
+		StartingToken: token,
+	})
+}
+
 // A non-error response with no health statuses is the explicit recovery signal and yields
 // an empty (healthy) result.
 func (handler *csiPVHandler) ControllerGetVolumeHealth(ctx context.Context, volumeID string) (*VolumeHealthResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, handler.timeout)
+	defer cancel()
 	res, err := handler.controllerClient.ControllerGetVolumeHealth(ctx, &csi.ControllerGetVolumeHealthRequest{
 		VolumeId: volumeID,
 	})

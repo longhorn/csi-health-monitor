@@ -45,6 +45,8 @@ func (checker *PVHealthConditionChecker) patchPVCHealthStatus(
 		return fmt.Errorf("failed to marshal health status patch for PVC %s/%s: %w", pvc.Namespace, pvc.Name, err)
 	}
 
+	ctx, cancel := context.WithTimeout(ctx, checker.timeout)
+	defer cancel()
 	_, err = checker.k8sClient.CoreV1().PersistentVolumeClaims(pvc.Namespace).Patch(
 		ctx,
 		pvc.Name,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"reflect"
 	"testing"
+	"time"
 
 	v1 "k8s.io/api/core/v1"
 
@@ -64,7 +65,7 @@ type VolumeSample struct {
 func Test_csiPVHandler_ControllerListVolumeHealth(t *testing.T) {
 	drv, csiConn := mock.StartFakeDriver(t)
 
-	handler := NewCSIPVHandler(csiConn)
+	handler := NewCSIPVHandler(csiConn, 15*time.Second)
 	out := &csi.ControllerListVolumeHealthResponse{
 		Entries: []*csi.VolumeHealth{
 			abnormalVolumeHealth,
@@ -110,7 +111,7 @@ func Test_csiPVHandler_ControllerListVolumeHealth(t *testing.T) {
 func Test_csiPVHandler_ControllerGetVolumeHealth(t *testing.T) {
 	drv, csiConn := mock.StartFakeDriver(t)
 
-	handler := NewCSIPVHandler(csiConn)
+	handler := NewCSIPVHandler(csiConn, 15*time.Second)
 	tests := []struct {
 		name     string
 		want     *VolumeHealthResult
@@ -174,5 +175,58 @@ func Test_mapVolumeHealthErrorType(t *testing.T) {
 				t.Errorf("mapVolumeHealthErrorType(%v) = %v, want %v", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+// Guards against reintroducing a single deadline around a whole listing
+// cycle: every page and every get must get a fresh per-RPC deadline.
+func Test_csiPVHandler_PerRPCDeadlines(t *testing.T) {
+	drv, csiConn := mock.StartFakeDriver(t)
+	handler := NewCSIPVHandler(csiConn, 15*time.Second)
+
+	page1 := &csi.ControllerListVolumeHealthResponse{
+		Entries:   []*csi.VolumeHealth{abnormalVolumeHealth},
+		NextToken: "page-2",
+	}
+	page2 := &csi.ControllerListVolumeHealthResponse{
+		Entries: []*csi.VolumeHealth{healthyVolumeHealth},
+	}
+	drv.Controller.SetListVolumeHealthPages(page1, page2)
+	drv.Controller.SetGetVolumeHealth("1", &csi.ControllerGetVolumeHealthResponse{VolumeHealth: abnormalVolumeHealth}, nil)
+
+	got, err := handler.ControllerListVolumeHealth(context.Background())
+	if err != nil {
+		t.Fatalf("ControllerListVolumeHealth() error = %v", err)
+	}
+	want := map[string]*VolumeHealthResult{
+		"1": {Conditions: abnormalConditions},
+		"2": {Conditions: nil},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ControllerListVolumeHealth() = %v, want %v", got, want)
+	}
+
+	if _, err := handler.ControllerGetVolumeHealth(context.Background(), "1"); err != nil {
+		t.Fatalf("ControllerGetVolumeHealth() error = %v", err)
+	}
+
+	listDeadlines := drv.Controller.ListVolumeHealthDeadlines()
+	if len(listDeadlines) != 2 {
+		t.Fatalf("expected 2 list pages, got %d", len(listDeadlines))
+	}
+	getDeadlines := drv.Controller.GetVolumeHealthDeadlines()
+	if len(getDeadlines) != 1 {
+		t.Fatalf("expected 1 get request, got %d", len(getDeadlines))
+	}
+	for i, d := range append(listDeadlines, getDeadlines...) {
+		if d.IsZero() {
+			t.Errorf("request %d carried no deadline", i)
+		}
+	}
+	if !listDeadlines[1].After(listDeadlines[0]) {
+		t.Errorf("second page must get a fresh deadline, got %v then %v", listDeadlines[0], listDeadlines[1])
+	}
+	if !getDeadlines[0].After(listDeadlines[1]) {
+		t.Errorf("get must not inherit the list deadline, got %v after %v", getDeadlines[0], listDeadlines[1])
 	}
 }
