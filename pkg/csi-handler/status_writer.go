@@ -24,13 +24,11 @@ func buildHealthStatus(desired []v1.VolumeHealthCondition) *v1.VolumeHealthStatu
 	}
 }
 
-// TODO replace with clientset.CoreV1().PersistentVolumeClaims(ns).ApplyStatus
-//
-// The returned bool reports whether the write actually persisted: the API
+// The returned bool reports whether the write actually persisted. The API
 // server accepts the patch but drops healthStatus when the CSIVolumeHealth
-// feature gate is disabled. A dropped write must not be recorded as applied,
-// or the checker would believe the conditions were written and go silent for
-// this PVC even after the gate is enabled.
+// feature gate is disabled, and a dropped write must not be recorded as
+// applied, because the checker would then believe the conditions were written
+// and stay silent for this PVC even after the gate is enabled.
 func (checker *PVHealthConditionChecker) patchPVCHealthStatus(
 	ctx context.Context,
 	pvc *v1.PersistentVolumeClaim,

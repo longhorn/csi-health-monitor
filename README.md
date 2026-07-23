@@ -1,48 +1,33 @@
 # Volume Health Monitor
 
-The Volume Health Monitor is part of Kubernetes implementation of [Container Storage Interface (CSI)](https://github.com/container-storage-interface/spec). It was introduced as an Alpha feature in Kubernetes v1.19. In Kubernetes 1.21, a second Alpha was done due to a design change.
+The external health monitor controller is a [CSI](https://github.com/container-storage-interface/spec) sidecar that watches the volumes of a CSI driver, periodically checks their health through the driver's controller service, and records adverse conditions on the `PersistentVolumeClaim.Status.HealthStatus` field of the bound claims. It implements the controller side of [KEP-1432](https://github.com/kubernetes/enhancements/tree/master/keps/sig-storage/1432-volume-health-monitor).
 
 ## Overview
 
-The [Volume Health Monitor](https://github.com/kubernetes/enhancements/tree/master/keps/sig-storage/1432-volume-health-monitor) is implemented in two components: `External Health Monitor Controller` and `Kubelet`.
+The sidecar is deployed together with the CSI controller driver, similar to how the external-provisioner sidecar is deployed.
 
-When this feature was first introduced in Kubernetes 1.19, there was an `External Health Monitor Agent` that monitors volume health from the node side. In the Kubernetes 1.21 release, the node side volume health monitoring logic was moved to Kubelet to avoid duplicate CSI RPC calls.
+A CSI driver opts in by advertising controller service capabilities:
 
-- External Health Monitor Controller:
-  - The external health monitor controller will be deployed as a sidecar together with the CSI controller driver, similar to how the external-provisioner sidecar is deployed.
-  - Trigger controller RPCs to check the health condition of the CSI volumes.
-  - Write controller-reported health to `PersistentVolumeClaim.Status.HealthStatus`.
+- `GET_VOLUME_HEALTH`: the sidecar polls each bound volume individually with `ControllerGetVolumeHealth`.
+- `LIST_VOLUME_HEALTH`: the sidecar retrieves health for all volumes in one paginated `ControllerListVolumeHealth` pass per cycle. This mode is preferred when advertised. Per the CSI specification, a driver that advertises `LIST_VOLUME_HEALTH` must also advertise `GET_VOLUME_HEALTH`, because the sidecar uses the Get RPC to confirm the state of previously unhealthy volumes that are absent from a list response.
 
-- Kubelet:
-  - Kubelet owns node-side CSI volume health monitoring and surfaces node observations through Kubernetes status fields.
+The sidecar exits at startup if the driver advertises neither capability, or advertises `LIST_VOLUME_HEALTH` without `GET_VOLUME_HEALTH`.
 
-The Volume Health Monitoring feature need to invoke the following CSI interfaces.
+Health conditions reported by the driver are written to `pvc.status.healthStatus.healthConditions` as `(status, reason, message)` entries, where `status` is one of `Inaccessible`, `DataLoss`, or `Degraded`. The driver's report is authoritative. Conditions the driver no longer reports are removed, an explicitly healthy report clears the field, and nothing is written when nothing has changed.
 
-- External Health Monitor Controller:
-  - ControllerListVolumeHealth (preferred when supported)
-  - ControllerGetVolumeHealth
-- Kubelet:
-  - NodeGetVolumeHealth
-  - NodeGetStorageHealth
-  - This feature in Kubelet is controlled by an Alpha feature gate `CSIVolumeHealth`.
+The `CSIVolumeHealth` feature gate must be enabled on kube-apiserver for `pvc.status.healthStatus` to be persisted. The sidecar itself has no feature gate. Deploying it is how a cluster opts in on the controller side. When the gate is disabled, the API server silently drops the field. The sidecar detects this, logs it, counts it in the `csi_volume_health_status_writes_dropped_total` metric, and keeps retrying so reporting resumes as soon as the gate is enabled.
 
 ## Compatibility
 
 This information reflects the head of this branch.
 
-| Compatible with CSI Version                                                                | Container Image             |
-| ------------------------------------------------------------------------------------------ | ----------------------------|
-| [CSI Spec v1.3.0](https://github.com/container-storage-interface/spec/releases/tag/v1.3.0) | registry.k8s.io/sig-storage.csi-external-health-monitor-controller |
-
-## Driver Support
-
-Currently, the CSI volume health monitoring interfaces are only implemented in the Mock Driver and the CSI Hostpath driver.
+| Compatible with CSI Version                                                                          | Container Image             |
+| ----------------------------------------------------------------------------------------------------- | ----------------------------|
+| [CSI Spec v1.13.0](https://github.com/container-storage-interface/spec/releases/tag/v1.13.0-rc1) | registry.k8s.io/sig-storage/csi-external-health-monitor-controller |
 
 ## Usage
 
 External Health Monitor Controller needs to be deployed with CSI driver.
-
-Alpha feature gate `CSIVolumeHealth` needs to be enabled for the node side monitoring to take effect.
 
 ### Build && Push Image
 
@@ -73,7 +58,7 @@ Check logs of external health monitor controller as follows:
 
 Check `pvc.status.healthStatus` for controller-reported abnormal volume health when the volume you are using is abnormal.
 
-## csi-external-health-monitor-controller-sidecar-command-line-options
+## Command line options
 
 ### Important optional arguments that are highly recommended to be used
 
@@ -103,7 +88,7 @@ Check `pvc.status.healthStatus` for controller-reported abnormal volume health w
 
 - `version`: Prints the current version of external-health-monitor-controller.
 
-- `timeout <duration>`: Timeout of all calls to CSI Driver. It should be set to value that accommodates the majority of `ControllerListVolumeHealth` and `ControllerGetVolumeHealth` calls. 15 seconds is used by default.
+- `timeout <duration>`: Timeout of each call to the CSI driver and of each PVC status patch. It should be set to a value that accommodates the majority of `ControllerListVolumeHealth` pages and `ControllerGetVolumeHealth` calls. 15 seconds is used by default.
 
 - `list-volumes-interval <duration>`: Interval of monitoring volume health condition by invoking `ControllerListVolumeHealth`. You can adjust it to change the frequency of the evaluation process. Five minutes by default if not set.
 
@@ -116,6 +101,15 @@ Check `pvc.status.healthStatus` for controller-reported abnormal volume health w
 - `--automaxprocs`: Automatically set the `GOMAXPROCS` environment variable to match the configured Linux container CPU quota. Defaults to false.
 
 * [Arguments set by the `k8s.io/component-base/logs` package for klog](https://github.com/kubernetes/component-base/blob/v0.28.0-rc.0/logs/api/v1/options.go#L337-L355) are supported, such as `--v <log level>` and `--logging-format <log format>`.
+
+## Metrics
+
+The sidecar exposes the following metrics when `--http-endpoint` is set:
+
+- `csi_volume_health_probe_total`: cumulative count of health probes, broken down by CSI method and result.
+- `csi_volume_health_probe_duration_seconds`: health probe RPC latency, broken down by CSI method.
+- `csi_controller_volume_health_status`: one series per `(status, reason)` condition currently reported on an unhealthy volume's PVC, with value 1.
+- `csi_volume_health_status_writes_dropped_total`: cumulative count of status writes dropped by the API server, which indicates the `CSIVolumeHealth` feature gate is disabled.
 
 ## Community, discussion, contribution, and support
 
