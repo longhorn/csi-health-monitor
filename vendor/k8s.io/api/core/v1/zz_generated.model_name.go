@@ -327,6 +327,11 @@ func (in EventSource) OpenAPIModelName() string {
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
+func (in EvictionResponder) OpenAPIModelName() string {
+	return "io.k8s.api.core.v1.EvictionResponder"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
 func (in ExecAction) OpenAPIModelName() string {
 	return "io.k8s.api.core.v1.ExecAction"
 }
@@ -542,6 +547,16 @@ func (in NodeAffinity) OpenAPIModelName() string {
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
+func (in NodeAllocatableMappedResources) OpenAPIModelName() string {
+	return "io.k8s.api.core.v1.NodeAllocatableMappedResources"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in NodeAllocatableOverheadResources) OpenAPIModelName() string {
+	return "io.k8s.api.core.v1.NodeAllocatableOverheadResources"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
 func (in NodeAllocatableResourceClaimStatus) OpenAPIModelName() string {
 	return "io.k8s.api.core.v1.NodeAllocatableResourceClaimStatus"
 }
@@ -574,6 +589,11 @@ func (in NodeFeatures) OpenAPIModelName() string {
 // OpenAPIModelName returns the OpenAPI model name for this type.
 func (in NodeList) OpenAPIModelName() string {
 	return "io.k8s.api.core.v1.NodeList"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in NodePodPreemptionPolicy) OpenAPIModelName() string {
+	return "io.k8s.api.core.v1.NodePodPreemptionPolicy"
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
