@@ -10,10 +10,12 @@ import (
 	informerV1 "k8s.io/client-go/informers/core/v1"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
+	k8smetrics "k8s.io/component-base/metrics"
 	"k8s.io/klog/v2/ktesting"
 	_ "k8s.io/klog/v2/ktesting/init"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
+	healthmetrics "github.com/kubernetes-csi/external-health-monitor/pkg/metrics"
 	"github.com/kubernetes-csi/external-health-monitor/pkg/mock"
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc/codes"
@@ -120,6 +122,14 @@ func TestPVHealthConditionChecker_CheckControllerListVolumeHealth(t *testing.T) 
 			name:      "PV without CSI driver is skipped",
 			pvc:       mock.CreatePVC(1, 2, "pvc", "uid", mock.DefaultNS, "pv", v1.ClaimBound),
 			pv:        mock.CreatePVWithoutCSIDriver(2, "pvc", "pv", mock.DefaultNS, "1", "uid", v1.VolumeBound, &mock.BlockVolumeMode),
+			volumeId:  "1",
+			health:    mock.AbnormalVolumeHealth("1"),
+			wantPatch: false,
+		},
+		{
+			name:      "Bound PV without claimRef is skipped",
+			pvc:       mock.CreatePVC(1, 2, "pvc", "uid", mock.DefaultNS, "pv", v1.ClaimBound),
+			pv:        mock.CreatePV(2, "", "pv", mock.DefaultNS, "1", "uid", &mock.BlockVolumeMode, v1.VolumeBound),
 			volumeId:  "1",
 			health:    mock.AbnormalVolumeHealth("1"),
 			wantPatch: false,
@@ -407,6 +417,14 @@ func TestPVHealthConditionChecker_CheckControllerVolumeHealth(t *testing.T) {
 			expectRPC: false,
 			wantErr:   true,
 		},
+		{
+			name:      "Bound PV without claimRef: error, no RPC",
+			pvc:       mock.CreatePVC(1, 2, "pvc", "uid", mock.DefaultNS, "pv", v1.ClaimBound),
+			pv:        mock.CreatePV(2, "", "pv", mock.DefaultNS, "1", "uid", &mock.BlockVolumeMode, v1.VolumeBound),
+			volumeId:  "1",
+			expectRPC: false,
+			wantErr:   true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -492,4 +510,48 @@ func Test_DroppedHealthStatusWritesRetryAndRecoverImmediately(t *testing.T) {
 	assert.True(abnormalPatch, "the write must carry the conditions")
 	assert.True(checker.pvHealthConditionChecker.knownUnhealthy["1"], "persisted write must be recorded")
 	assert.False(checker.pvHealthConditionChecker.fieldDropped.Load(), "recovery must clear the dropped state")
+}
+
+func Test_ForgetVolumeDropsCheckerState(t *testing.T) {
+	assert := assert.New(t)
+	checker := createMockPVHealthConditionChecker(t)
+
+	m := healthmetrics.New()
+	reg := k8smetrics.NewKubeRegistry()
+	m.Register(reg)
+	checker.pvHealthConditionChecker.metrics = m
+
+	pv := mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "1", "uid", &mock.BlockVolumeMode, v1.VolumeBound)
+	pvc := mock.CreatePVC(1, 2, "pvc", "uid", mock.DefaultNS, "pv", v1.ClaimBound)
+	assert.Nil(checker.pvInformer.Informer().GetStore().Add(pv))
+	checker.seedPVC(t, pvc)
+
+	_, ctx := ktesting.NewTestContext(t)
+	abnormal := &csi.ControllerGetVolumeHealthResponse{VolumeHealth: mock.AbnormalVolumeHealth("1")}
+	checker.csiControllerServer.SetGetVolumeHealth("1", abnormal, nil)
+	assert.Nil(checker.pvHealthConditionChecker.CheckControllerVolumeHealth(ctx, pv))
+
+	assert.True(checker.pvHealthConditionChecker.knownUnhealthy["1"])
+	assert.Len(checker.pvHealthConditionChecker.lastApplied, 1)
+	assert.Equal(1, gaugeSeriesCount(t, reg))
+
+	checker.pvHealthConditionChecker.ForgetVolume(pv)
+
+	assert.Empty(checker.pvHealthConditionChecker.knownUnhealthy, "recovery tracking must be dropped")
+	assert.Empty(checker.pvHealthConditionChecker.lastApplied, "write-through cache must be dropped")
+	assert.Equal(0, gaugeSeriesCount(t, reg), "the PVC's metric series must be removed")
+}
+
+func gaugeSeriesCount(t *testing.T, reg k8smetrics.KubeRegistry) int {
+	t.Helper()
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() == healthmetrics.ControllerVolumeHealthStatusName {
+			return len(mf.GetMetric())
+		}
+	}
+	return 0
 }

@@ -105,17 +105,25 @@ func NewPVMonitorController(
 
 func (ctrl *PVMonitorController) setupPVInformer(factory informers.SharedInformerFactory) {
 	informer := factory.Core().V1().PersistentVolumes()
-	informer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: ctrl.pvAdded,
-		// we do not care about PV changes, so do not need UpdateFunc here.
-		// deleted PVs will not be readded to the queue, so do not need DeleteFunc here
-	})
+	handlers := cache.ResourceEventHandlerFuncs{
+		// PV phase changes are picked up by the periodic AddPVsToQueue pass,
+		// so no UpdateFunc is needed.
+		DeleteFunc: ctrl.pvDeleted,
+	}
+	if !ctrl.supportListVolumeHealth {
+		// Only Get mode consumes the PV worker queue.
+		handlers.AddFunc = ctrl.pvAdded
+	}
+	informer.Informer().AddEventHandler(handlers)
 	ctrl.pvLister = informer.Lister()
 	ctrl.pvListerSynced = informer.Informer().HasSynced
 }
 
 func (ctrl *PVMonitorController) setupPVCInformer(factory informers.SharedInformerFactory) {
 	informer := factory.Core().V1().PersistentVolumeClaims()
+	informer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+		DeleteFunc: ctrl.pvcDeleted,
+	})
 	ctrl.pvcLister = informer.Lister()
 	ctrl.pvcListerSynced = informer.Informer().HasSynced
 }

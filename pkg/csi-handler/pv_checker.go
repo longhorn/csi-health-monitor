@@ -118,6 +118,10 @@ func (checker *PVHealthConditionChecker) CheckControllerListVolumeHealth(ctx con
 		if pv.Status.Phase != v1.VolumeBound {
 			continue
 		}
+		if pv.Spec.ClaimRef == nil {
+			logger.V(4).Info("Skipping bound PV without claimRef", "pv", pv.Name)
+			continue
+		}
 
 		volumeHandle, err := checker.GetVolumeHandle(pv)
 		if err != nil {
@@ -181,6 +185,10 @@ func (checker *PVHealthConditionChecker) CheckControllerVolumeHealth(ctx context
 
 	if pv.Status.Phase != v1.VolumeBound {
 		return fmt.Errorf("PV: %s status is not bound", pv.Name)
+	}
+
+	if pv.Spec.ClaimRef == nil {
+		return fmt.Errorf("PV %s is bound but has no claimRef", pv.Name)
 	}
 
 	logger := klog.FromContext(ctx)
@@ -248,6 +256,30 @@ func (checker *PVHealthConditionChecker) reconcileAndTrack(ctx context.Context, 
 
 	checker.updateVolumeHealthGauge(pvc.Namespace, pvc.Name, desired)
 	return nil
+}
+
+// ForgetVolume drops the per-volume state held for a deleted PV: recovery
+// tracking, the write-through cache, and the bound PVC's metric series.
+func (checker *PVHealthConditionChecker) ForgetVolume(pv *v1.PersistentVolume) {
+	if pv.Spec.CSI != nil && pv.Spec.CSI.VolumeHandle != "" {
+		checker.recoveryStateMu.Lock()
+		delete(checker.knownUnhealthy, pv.Spec.CSI.VolumeHandle)
+		checker.recoveryStateMu.Unlock()
+	}
+	if pv.Spec.ClaimRef != nil {
+		checker.ForgetPVC(pv.Spec.ClaimRef.Namespace, pv.Spec.ClaimRef.Name)
+	}
+}
+
+// ForgetPVC drops the per-PVC state held for a deleted PVC.
+func (checker *PVHealthConditionChecker) ForgetPVC(namespace, name string) {
+	checker.recoveryStateMu.Lock()
+	delete(checker.lastApplied, namespace+"/"+name)
+	checker.recoveryStateMu.Unlock()
+
+	if checker.metrics != nil {
+		checker.metrics.ClearVolumeHealth(namespace, name)
+	}
 }
 
 func (checker *PVHealthConditionChecker) needsAbsentVolumeConfirmation(pvc *v1.PersistentVolumeClaim, volumeHandle string) bool {

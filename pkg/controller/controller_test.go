@@ -181,3 +181,27 @@ func Test_DeletingPVIsForgotten(t *testing.T) {
 	assert.Nil(ctrl.AddPVsToQueue())
 	assert.Equal(0, ctrl.pvQueue.Len(), "deleting PV must not be re-enqueued by the periodic pass")
 }
+
+func Test_PVDeletionForgetsTracking(t *testing.T) {
+	assert := assert.New(t)
+
+	pv := mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "vol-1", "pvcuid", &mock.BlockVolumeMode, v1.VolumeBound)
+	pvc := mock.CreatePVC(1, 2, "pvc", "pvcuid", mock.DefaultNS, "pv", v1.ClaimBound)
+	ctrl, _, _ := newGetModeFixture(t, pv, pvc)
+
+	ctrl.pvAdded(pv)
+	assert.True(ctrl.pvEnqueued["pv"])
+	ctrl.pvDeleted(pv)
+	assert.False(ctrl.pvEnqueued["pv"], "deleted PV must be forgotten")
+
+	// The informer may hand a tombstone instead of the object.
+	ctrl.pvAdded(pv)
+	assert.True(ctrl.pvEnqueued["pv"])
+	ctrl.pvDeleted(cache.DeletedFinalStateUnknown{Key: "pv", Obj: pv})
+	assert.False(ctrl.pvEnqueued["pv"], "tombstoned PV must be forgotten")
+
+	// Deletion events for foreign objects must be ignored without panicking.
+	ctrl.pvDeleted(cache.DeletedFinalStateUnknown{Key: "x", Obj: nil})
+	ctrl.pvcDeleted(pvc)
+	ctrl.pvcDeleted(cache.DeletedFinalStateUnknown{Key: "pvc", Obj: pvc})
+}

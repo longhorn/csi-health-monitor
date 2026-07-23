@@ -99,6 +99,10 @@ func runTest(t *testing.T, tc *testCase) {
 		assert.False(seen, "expected no healthStatus patch for a healthy volume")
 	}
 
+	if tc.supportListVolumeHealth {
+		assert.Equal(0, pvMonitorController.pvQueue.Len(), "List mode must not accumulate PV queue entries")
+	}
+
 	cancel()
 }
 
