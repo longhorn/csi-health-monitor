@@ -15,12 +15,9 @@ import (
 	_ "k8s.io/klog/v2/ktesting/init"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
-	"github.com/kubernetes-csi/csi-test/v5/driver"
-	"github.com/kubernetes-csi/csi-test/v5/utils"
 	"github.com/kubernetes-csi/external-health-monitor/pkg/metrics"
 	"github.com/kubernetes-csi/external-health-monitor/pkg/mock"
 	"github.com/stretchr/testify/assert"
-	"go.uber.org/mock/gomock"
 )
 
 type fakeNativeObjects struct {
@@ -75,18 +72,17 @@ func runTest(t *testing.T, tc *testCase) {
 		SupportListVolumeHealth:  tc.supportListVolumeHealth,
 	}
 
-	_, _, _, controllerServer, _, csiConn, err := mock.CreateMockServer(t)
-	assert.Nil(err)
+	drv, csiConn := mock.StartFakeDriver(t)
 
 	var volumes []*mock.CSIVolume
 	volumes = append(volumes, tc.fakeNativeObjects.MockVolume.CSIVolume)
-	err = pvInformer.Informer().GetStore().Add(tc.fakeNativeObjects.MockVolume.NativeVolume)
+	err := pvInformer.Informer().GetStore().Add(tc.fakeNativeObjects.MockVolume.NativeVolume)
 	assert.Nil(err)
 	err = pvcInformer.Informer().GetStore().Add(tc.fakeNativeObjects.MockVolume.NativeVolumeClaim)
 	assert.Nil(err)
 
 	_, ctx := ktesting.NewTestContext(t)
-	mockCSIControllerServer(controllerServer, tc.supportListVolumeHealth, volumes)
+	programFakeControllerServer(drv.Controller, tc.supportListVolumeHealth, volumes)
 	pvMonitorController := NewPVMonitorController(client, csiConn, informers, metrics.New(), option)
 	assert.NotNil(pvMonitorController)
 
@@ -107,23 +103,16 @@ func runTest(t *testing.T, tc *testCase) {
 	cancel()
 }
 
-func mockCSIControllerServer(csiControllerServer *driver.MockControllerServer, supportListVolumeHealth bool, objects []*mock.CSIVolume) {
+func programFakeControllerServer(ctrl *mock.FakeControllerServer, supportListVolumeHealth bool, objects []*mock.CSIVolume) {
 	if supportListVolumeHealth {
 		entries := make([]*csi.VolumeHealth, len(objects))
 		for index, volume := range objects {
 			entries[index] = volume.Health
 		}
-		in := &csi.ControllerListVolumeHealthRequest{StartingToken: ""}
-		out := &csi.ControllerListVolumeHealthResponse{
-			Entries:   entries,
-			NextToken: "",
-		}
-		csiControllerServer.EXPECT().ControllerListVolumeHealth(gomock.Any(), utils.Protobuf(in)).Return(out, nil).Times(100000)
+		ctrl.SetListVolumeHealth(&csi.ControllerListVolumeHealthResponse{Entries: entries}, nil)
 	} else {
 		for _, volume := range objects {
-			in := &csi.ControllerGetVolumeHealthRequest{VolumeId: volume.Volume.VolumeId}
-			out := &csi.ControllerGetVolumeHealthResponse{VolumeHealth: volume.Health}
-			csiControllerServer.EXPECT().ControllerGetVolumeHealth(gomock.Any(), utils.Protobuf(in)).Return(out, nil).Times(100000)
+			ctrl.SetGetVolumeHealth(volume.Volume.VolumeId, &csi.ControllerGetVolumeHealthResponse{VolumeHealth: volume.Health}, nil)
 		}
 	}
 }

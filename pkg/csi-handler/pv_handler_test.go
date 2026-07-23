@@ -8,9 +8,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
-	"github.com/kubernetes-csi/csi-test/v5/utils"
 	"github.com/kubernetes-csi/external-health-monitor/pkg/mock"
-	"go.uber.org/mock/gomock"
 )
 
 var (
@@ -64,17 +62,9 @@ type VolumeSample struct {
 }
 
 func Test_csiPVHandler_ControllerListVolumeHealth(t *testing.T) {
-	mockController, driver, _, controllerServer, _, csiConn, err := mock.CreateMockServer(t)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer mockController.Finish()
-	defer driver.Stop()
+	drv, csiConn := mock.StartFakeDriver(t)
 
 	handler := NewCSIPVHandler(csiConn)
-	in := &csi.ControllerListVolumeHealthRequest{
-		StartingToken: "",
-	}
 	out := &csi.ControllerListVolumeHealthResponse{
 		Entries: []*csi.VolumeHealth{
 			abnormalVolumeHealth,
@@ -82,8 +72,8 @@ func Test_csiPVHandler_ControllerListVolumeHealth(t *testing.T) {
 		},
 		NextToken: "",
 	}
+	drv.Controller.SetListVolumeHealth(out, nil)
 
-	controllerServer.EXPECT().ControllerListVolumeHealth(gomock.Any(), utils.Protobuf(in)).Return(out, nil).Times(1)
 	tests := []struct {
 		name    string
 		want    map[string]*VolumeHealthResult
@@ -107,17 +97,18 @@ func Test_csiPVHandler_ControllerListVolumeHealth(t *testing.T) {
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("csiPVHandler.ControllerListVolumeHealth() = %v, want %v", got, tt.want)
 			}
+			reqs := drv.Controller.ListVolumeHealthRequests()
+			if len(reqs) != 1 {
+				t.Errorf("expected exactly 1 list RPC, got %d", len(reqs))
+			} else if reqs[0].GetStartingToken() != "" {
+				t.Errorf("expected empty starting token, got %q", reqs[0].GetStartingToken())
+			}
 		})
 	}
 }
 
 func Test_csiPVHandler_ControllerGetVolumeHealth(t *testing.T) {
-	mockController, driver, _, controllerServer, _, csiConn, err := mock.CreateMockServer(t)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer mockController.Finish()
-	defer driver.Stop()
+	drv, csiConn := mock.StartFakeDriver(t)
 
 	handler := NewCSIPVHandler(csiConn)
 	tests := []struct {
@@ -141,13 +132,12 @@ func Test_csiPVHandler_ControllerGetVolumeHealth(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			in := &csi.ControllerGetVolumeHealthRequest{
-				VolumeId: tt.volumeId,
-			}
 			out := &csi.ControllerGetVolumeHealthResponse{
 				VolumeHealth: volumeMap[tt.volumeId].Health,
 			}
-			controllerServer.EXPECT().ControllerGetVolumeHealth(gomock.Any(), utils.Protobuf(in)).Return(out, nil).Times(1)
+			drv.Controller.SetGetVolumeHealth(tt.volumeId, out, nil)
+			reqsBefore := len(drv.Controller.GetVolumeHealthRequests())
+
 			got, err := handler.ControllerGetVolumeHealth(context.Background(), tt.volumeId)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("csiPVHandler.ControllerGetVolumeHealth() error = %v, wantErr %v", err, tt.wantErr)
@@ -155,6 +145,12 @@ func Test_csiPVHandler_ControllerGetVolumeHealth(t *testing.T) {
 			}
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("csiPVHandler.ControllerGetVolumeHealth() = %v, want %v", got, tt.want)
+			}
+			reqs := drv.Controller.GetVolumeHealthRequests()
+			if len(reqs) != reqsBefore+1 {
+				t.Errorf("expected exactly 1 additional Get RPC, got %d", len(reqs)-reqsBefore)
+			} else if reqs[len(reqs)-1].GetVolumeId() != tt.volumeId {
+				t.Errorf("expected request for volume %q, got %q", tt.volumeId, reqs[len(reqs)-1].GetVolumeId())
 			}
 		})
 	}

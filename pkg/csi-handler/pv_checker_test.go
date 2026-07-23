@@ -13,11 +13,8 @@ import (
 	_ "k8s.io/klog/v2/ktesting/init"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
-	"github.com/kubernetes-csi/csi-test/v5/driver"
-	"github.com/kubernetes-csi/csi-test/v5/utils"
 	"github.com/kubernetes-csi/external-health-monitor/pkg/mock"
 	"github.com/stretchr/testify/assert"
-	"go.uber.org/mock/gomock"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -27,16 +24,12 @@ type MockPVHealthConditionChecker struct {
 	pvcInformer              informerV1.PersistentVolumeClaimInformer
 	pvInformer               informerV1.PersistentVolumeInformer
 	fakeClient               *fake.Clientset
-	csiControllerServer      *driver.MockControllerServer
-	csiNodeServer            *driver.MockNodeServer
+	csiControllerServer      *mock.FakeControllerServer
 }
 
 func createMockPVHealthConditionChecker(t *testing.T) *MockPVHealthConditionChecker {
 	k8sClient, informer := mock.FakeK8s()
-	_, _, _, controllerServer, nodeServer, csiConn, err := mock.CreateMockServer(t)
-	if err != nil {
-		t.Fatal(err)
-	}
+	drv, csiConn := mock.StartFakeDriver(t)
 
 	handler := NewCSIPVHandler(csiConn)
 	return &MockPVHealthConditionChecker{
@@ -53,8 +46,7 @@ func createMockPVHealthConditionChecker(t *testing.T) *MockPVHealthConditionChec
 		pvcInformer:         informer.Core().V1().PersistentVolumeClaims(),
 		pvInformer:          informer.Core().V1().PersistentVolumes(),
 		fakeClient:          k8sClient.(*fake.Clientset),
-		csiControllerServer: controllerServer,
-		csiNodeServer:       nodeServer,
+		csiControllerServer: drv.Controller,
 	}
 }
 
@@ -141,17 +133,21 @@ func TestPVHealthConditionChecker_CheckControllerListVolumeHealth(t *testing.T) 
 			}
 			checker.seedPVC(t, tt.pvc)
 
-			in := &csi.ControllerListVolumeHealthRequest{StartingToken: ""}
 			out := &csi.ControllerListVolumeHealthResponse{
 				Entries:   []*csi.VolumeHealth{tt.health},
 				NextToken: "",
 			}
+			checker.csiControllerServer.SetListVolumeHealth(out, nil)
 
 			_, ctx := ktesting.NewTestContext(t)
-			checker.csiControllerServer.EXPECT().ControllerListVolumeHealth(gomock.Any(), utils.Protobuf(in)).Return(out, nil).Times(1)
 			if err := checker.pvHealthConditionChecker.CheckControllerListVolumeHealth(ctx); (err != nil) != tt.wantErr {
 				t.Errorf("CheckControllerListVolumeHealth() error = %v, wantErr %v", err, tt.wantErr)
 			}
+
+			listReqs := checker.csiControllerServer.ListVolumeHealthRequests()
+			assert.Len(listReqs, 1, "exactly one list RPC per cycle")
+			assert.Equal("", listReqs[0].GetStartingToken())
+			assert.Empty(checker.csiControllerServer.GetVolumeHealthRequests(), "no Get expected when the volume is present in the list")
 
 			patched, abnormal := healthStatusPatched(checker.fakeClient.Actions())
 			assert.Equal(tt.wantPatch, patched, "patch issued?")
@@ -175,18 +171,23 @@ func Test_ListRecoveryUsesGetForMissingUnhealthyVolume(t *testing.T) {
 
 	// Cycle 1: abnormal via list -> tracked unhealthy.
 	abnormalOut := &csi.ControllerListVolumeHealthResponse{Entries: []*csi.VolumeHealth{mock.AbnormalVolumeHealth("1")}}
-	checker.csiControllerServer.EXPECT().ControllerListVolumeHealth(gomock.Any(), gomock.Any()).Return(abnormalOut, nil).Times(1)
+	checker.csiControllerServer.SetListVolumeHealth(abnormalOut, nil)
 	assert.Nil(checker.pvHealthConditionChecker.CheckControllerListVolumeHealth(ctx))
 	assert.True(checker.pvHealthConditionChecker.knownUnhealthy["1"])
+	assert.Empty(checker.csiControllerServer.GetVolumeHealthRequests(), "no Get confirm needed while the volume is present in the list")
 
 	// Cycle 2: absent from list, but a single Get confirms healthy -> cleared immediately.
 	checker.fakeClient.ClearActions()
 	emptyList := &csi.ControllerListVolumeHealthResponse{Entries: []*csi.VolumeHealth{}}
-	checker.csiControllerServer.EXPECT().ControllerListVolumeHealth(gomock.Any(), gomock.Any()).Return(emptyList, nil).Times(1)
+	checker.csiControllerServer.SetListVolumeHealth(emptyList, nil)
 	getEmpty := &csi.ControllerGetVolumeHealthResponse{VolumeHealth: mock.HealthyVolumeHealth("1")}
-	checker.csiControllerServer.EXPECT().ControllerGetVolumeHealth(gomock.Any(), gomock.Any()).Return(getEmpty, nil).Times(1)
+	checker.csiControllerServer.SetGetVolumeHealth("1", getEmpty, nil)
 
 	assert.Nil(checker.pvHealthConditionChecker.CheckControllerListVolumeHealth(ctx))
+
+	getReqs := checker.csiControllerServer.GetVolumeHealthRequests()
+	assert.Len(getReqs, 1, "exactly one Get confirmation for the absent volume")
+	assert.Equal("1", getReqs[0].GetVolumeId())
 
 	patched, abnormal := healthStatusPatched(checker.fakeClient.Actions())
 	assert.True(patched, "should clear after a single Get confirmation")
@@ -206,11 +207,16 @@ func Test_ListAbsentVolumeWithStalePVCHealthStatusUsesGetAfterRestart(t *testing
 
 	_, ctx := ktesting.NewTestContext(t)
 	emptyList := &csi.ControllerListVolumeHealthResponse{Entries: []*csi.VolumeHealth{}}
-	checker.csiControllerServer.EXPECT().ControllerListVolumeHealth(gomock.Any(), utils.Protobuf(&csi.ControllerListVolumeHealthRequest{})).Return(emptyList, nil).Times(1)
+	checker.csiControllerServer.SetListVolumeHealth(emptyList, nil)
 	getEmpty := &csi.ControllerGetVolumeHealthResponse{VolumeHealth: mock.HealthyVolumeHealth("1")}
-	checker.csiControllerServer.EXPECT().ControllerGetVolumeHealth(gomock.Any(), utils.Protobuf(&csi.ControllerGetVolumeHealthRequest{VolumeId: "1"})).Return(getEmpty, nil).Times(1)
+	checker.csiControllerServer.SetGetVolumeHealth("1", getEmpty, nil)
 
 	assert.Nil(checker.pvHealthConditionChecker.CheckControllerListVolumeHealth(ctx))
+
+	assert.Len(checker.csiControllerServer.ListVolumeHealthRequests(), 1)
+	getReqs := checker.csiControllerServer.GetVolumeHealthRequests()
+	assert.Len(getReqs, 1, "stale PVC status must trigger exactly one Get confirmation")
+	assert.Equal("1", getReqs[0].GetVolumeId())
 
 	patched, abnormal := healthStatusPatched(checker.fakeClient.Actions())
 	assert.True(patched, "stale healthStatus from before restart must be cleared")
@@ -231,16 +237,18 @@ func Test_FailedRPCIsNotRecovery(t *testing.T) {
 
 	// First establish unhealthy state.
 	abnormal := &csi.ControllerGetVolumeHealthResponse{VolumeHealth: mock.AbnormalVolumeHealth("1")}
-	checker.csiControllerServer.EXPECT().ControllerGetVolumeHealth(gomock.Any(), gomock.Any()).Return(abnormal, nil).Times(1)
+	checker.csiControllerServer.SetGetVolumeHealth("1", abnormal, nil)
 	assert.Nil(checker.pvHealthConditionChecker.CheckControllerVolumeHealth(ctx, pv))
 	assert.True(checker.pvHealthConditionChecker.knownUnhealthy["1"])
 
 	// Now the RPC fails. The volume must remain tracked unhealthy and no patch issued.
 	checker.fakeClient.ClearActions()
-	checker.csiControllerServer.EXPECT().ControllerGetVolumeHealth(gomock.Any(), gomock.Any()).Return(nil, status.Error(codes.Unavailable, "driver down")).Times(1)
+	checker.csiControllerServer.SetGetVolumeHealth("1", nil, status.Error(codes.Unavailable, "driver down"))
 
 	err := checker.pvHealthConditionChecker.CheckControllerVolumeHealth(ctx, pv)
 	assert.Error(err, "failed RPC should surface an error")
+
+	assert.Len(checker.csiControllerServer.GetVolumeHealthRequests(), 2, "one Get per cycle")
 
 	patched, _ := healthStatusPatched(checker.fakeClient.Actions())
 	assert.False(patched, "failed RPC must not issue a recovery patch")
@@ -260,7 +268,7 @@ func Test_ConditionTransition(t *testing.T) {
 
 	// Condition A: Inaccessible/VolumeNotFound.
 	condA := &csi.ControllerGetVolumeHealthResponse{VolumeHealth: mock.AbnormalVolumeHealth("1")}
-	checker.csiControllerServer.EXPECT().ControllerGetVolumeHealth(gomock.Any(), gomock.Any()).Return(condA, nil).Times(1)
+	checker.csiControllerServer.SetGetVolumeHealth("1", condA, nil)
 	assert.Nil(checker.pvHealthConditionChecker.CheckControllerVolumeHealth(ctx, pv))
 
 	// Condition B: Degraded/SlowIO (a different (status,reason)). Must patch again.
@@ -273,7 +281,7 @@ func Test_ConditionTransition(t *testing.T) {
 			},
 		},
 	}
-	checker.csiControllerServer.EXPECT().ControllerGetVolumeHealth(gomock.Any(), gomock.Any()).Return(condB, nil).Times(1)
+	checker.csiControllerServer.SetGetVolumeHealth("1", condB, nil)
 	assert.Nil(checker.pvHealthConditionChecker.CheckControllerVolumeHealth(ctx, pv))
 
 	patched, abnormal := healthStatusPatched(checker.fakeClient.Actions())
@@ -294,9 +302,13 @@ func Test_GetClearsStalePVCHealthStatusAfterRestart(t *testing.T) {
 
 	_, ctx := ktesting.NewTestContext(t)
 	getEmpty := &csi.ControllerGetVolumeHealthResponse{VolumeHealth: mock.HealthyVolumeHealth("1")}
-	checker.csiControllerServer.EXPECT().ControllerGetVolumeHealth(gomock.Any(), utils.Protobuf(&csi.ControllerGetVolumeHealthRequest{VolumeId: "1"})).Return(getEmpty, nil).Times(1)
+	checker.csiControllerServer.SetGetVolumeHealth("1", getEmpty, nil)
 
 	assert.Nil(checker.pvHealthConditionChecker.CheckControllerVolumeHealth(ctx, pv))
+
+	getReqs := checker.csiControllerServer.GetVolumeHealthRequests()
+	assert.Len(getReqs, 1)
+	assert.Equal("1", getReqs[0].GetVolumeId())
 
 	patched, abnormal := healthStatusPatched(checker.fakeClient.Actions())
 	assert.True(patched, "stale healthStatus from before restart must be cleared")
@@ -404,14 +416,21 @@ func TestPVHealthConditionChecker_CheckControllerVolumeHealth(t *testing.T) {
 			checker.seedPVC(t, tt.pvc)
 
 			if tt.expectRPC {
-				in := &csi.ControllerGetVolumeHealthRequest{VolumeId: tt.volumeId}
 				out := &csi.ControllerGetVolumeHealthResponse{VolumeHealth: tt.health}
-				checker.csiControllerServer.EXPECT().ControllerGetVolumeHealth(gomock.Any(), utils.Protobuf(in)).Return(out, nil).Times(1)
+				checker.csiControllerServer.SetGetVolumeHealth(tt.volumeId, out, nil)
 			}
 
 			_, ctx := ktesting.NewTestContext(t)
 			if err := checker.pvHealthConditionChecker.CheckControllerVolumeHealth(ctx, tt.pv); (err != nil) != tt.wantErr {
 				t.Errorf("CheckControllerVolumeHealth() error = %v, wantErr %v", err, tt.wantErr)
+			}
+
+			getReqs := checker.csiControllerServer.GetVolumeHealthRequests()
+			if tt.expectRPC {
+				assert.Len(getReqs, 1, "exactly one Get RPC")
+				assert.Equal(tt.volumeId, getReqs[0].GetVolumeId())
+			} else {
+				assert.Empty(getReqs, "no RPC expected")
 			}
 
 			patched, abnormal := healthStatusPatched(checker.fakeClient.Actions())

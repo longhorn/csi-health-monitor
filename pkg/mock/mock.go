@@ -3,9 +3,6 @@ package mock
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
-	"testing"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
@@ -19,9 +16,6 @@ import (
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"github.com/kubernetes-csi/csi-lib-utils/connection"
 	"github.com/kubernetes-csi/csi-lib-utils/metrics"
-	"github.com/kubernetes-csi/csi-test/v5/driver"
-	"github.com/stretchr/testify/assert"
-	"go.uber.org/mock/gomock"
 	"google.golang.org/grpc"
 )
 
@@ -96,40 +90,6 @@ func New(ctx context.Context, address string) (*grpc.ClientConn, error) {
 	}
 
 	return conn, nil
-}
-
-func createMockServer(t *testing.T, tmpdir string) (*gomock.Controller,
-	*driver.MockCSIDriver,
-	*driver.MockIdentityServer,
-	*driver.MockControllerServer,
-	*driver.MockNodeServer,
-	*grpc.ClientConn, error) {
-	// Start the mock server
-	mockController := gomock.NewController(t)
-	controllerServer := driver.NewMockControllerServer(mockController)
-	identityServer := driver.NewMockIdentityServer(mockController)
-	nodeServer := driver.NewMockNodeServer(mockController)
-	defer mockController.Finish()
-	drv := driver.NewMockCSIDriver(&driver.MockCSIDriverServers{
-		Identity:   identityServer,
-		Controller: controllerServer,
-		Node:       nodeServer,
-	})
-	drv.StartOnAddress("unix", filepath.Join(tmpdir, "csi.sock"))
-
-	// Create a client connection to it
-	addr := drv.Address()
-	csiConn, err := New(context.Background(), addr)
-	assert.Nil(t, err)
-
-	return mockController, drv, identityServer, controllerServer, nodeServer, csiConn, nil
-}
-
-func tempDir(t *testing.T) string {
-	assert := assert.New(t)
-	dir, err := os.MkdirTemp("", "external-provisioner-test")
-	assert.Nil(err)
-	return dir
 }
 
 func createNode(name, namespace string) *v1.Node {
@@ -250,15 +210,6 @@ func CreatePVWithNilVolumeHandle(capacityGB int, pvcName, name, pvcNamespace str
 	pv := createPV(capacityGB, pvcName, name, pvcNamespace, pvcUID, volumeId, volumePhase, volumeMode)
 	pv.Spec.CSI.VolumeHandle = ""
 	return pv
-}
-
-func CreateMockServer(t *testing.T) (*gomock.Controller,
-	*driver.MockCSIDriver,
-	*driver.MockIdentityServer,
-	*driver.MockControllerServer,
-	*driver.MockNodeServer,
-	*grpc.ClientConn, error) {
-	return createMockServer(t, tempDir(t))
 }
 
 func CreatePVC(requestGB, capacityGB int, name, uid, namespace, volumeName string, volumePhase v1.PersistentVolumeClaimPhase) *v1.PersistentVolumeClaim {

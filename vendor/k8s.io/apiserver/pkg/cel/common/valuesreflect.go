@@ -19,13 +19,16 @@ package common
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
+	"sync"
+
+	"sigs.k8s.io/structured-merge-diff/v6/value"
+
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"reflect"
-	"sigs.k8s.io/structured-merge-diff/v6/value"
-	"sync"
+	"k8s.io/apiserver/pkg/cel"
 
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
@@ -105,7 +108,7 @@ func TypedToVal(val interface{}, schema Schema) ref.Val {
 			switch listType {
 			case "map":
 				mapKeys := schema.XListMapKeys()
-				return &typedMapList{typedList: typedList, escapedKeyProps: escapeKeyProps(mapKeys)}
+				return &typedMapList{typedList: typedList, keyProps: mapKeys, escapedKeyProps: escapeKeyProps(mapKeys)}
 			case "set":
 				return &typedSetList{typedList: typedList}
 			case "atomic":
@@ -151,7 +154,8 @@ func TypedToVal(val interface{}, schema Schema) ref.Val {
 type typedStruct struct {
 	value reflect.Value // Kind is required to be: reflect.Struct
 
-	// propSchema finds the schema to use for a particular map key.
+	// propSchema finds the schema for a given key.
+	// The key is an unescaped JSON name, not an escaped CEL identifier.
 	propSchema func(key string) (Schema, bool)
 }
 
@@ -198,37 +202,46 @@ func (s *typedStruct) Value() interface{} {
 	return s.value.Interface()
 }
 
-func (s *typedStruct) IsSet(field ref.Val) ref.Val {
-	v, found := s.lookupField(field)
+// IsSet returns true if the field is set. escapedField must be a types.String containing the
+// escaped CEL identifier. For example, "__if__" for JSON name "if".
+func (s *typedStruct) IsSet(escapedField ref.Val) ref.Val {
+	v, found := s.lookupField(escapedField)
 	if v != nil && types.IsUnknownOrError(v) {
 		return v
 	}
 	return types.Bool(found)
 }
 
-func (s *typedStruct) Get(key ref.Val) ref.Val {
-	v, found := s.lookupField(key)
+// Get returns the value of a field. escapedKey must be a types.String containing the
+// escaped CEL identifier. For example, "__if__" for JSON name "if".
+func (s *typedStruct) Get(escapedKey ref.Val) ref.Val {
+	v, found := s.lookupField(escapedKey)
 	if !found {
-		return types.NewErr("no such key: %v", key)
+		return types.NewErr("no such key: %v", escapedKey)
 	}
 	return v
 }
 
-func (s *typedStruct) lookupField(key ref.Val) (ref.Val, bool) {
-	keyStr, ok := key.(types.String)
+// lookupField finds a field by name. escapedKey must be a types.String containing the escaped
+// CEL identifier of the field name. For example, "__if__" for JSON name "if".
+func (s *typedStruct) lookupField(escapedKey ref.Val) (ref.Val, bool) {
+	escapedKeyStr, ok := escapedKey.(types.String)
 	if !ok {
-		return types.MaybeNoSuchOverloadErr(key), true
+		return types.MaybeNoSuchOverloadErr(escapedKey), true
 	}
-	fieldName := keyStr.Value().(string)
+	unescapedFieldName, ok := cel.Unescape(escapedKeyStr.Value().(string))
+	if !ok {
+		return nil, false
+	}
 
 	cacheEntry := value.TypeReflectEntryOf(s.value.Type())
-	fieldCache, ok := cacheEntry.Fields()[fieldName]
+	fieldCache, ok := cacheEntry.Fields()[unescapedFieldName]
 	if !ok {
 		return nil, false
 	}
 
 	if e := fieldCache.GetFrom(s.value); !fieldCache.CanOmit(e) {
-		if propSchema, ok := s.propSchema(fieldName); ok {
+		if propSchema, ok := s.propSchema(unescapedFieldName); ok {
 			v := TypedToVal(e.Interface(), propSchema)
 			if v == types.NullValue {
 				return nil, false
@@ -273,7 +286,7 @@ func (t *typedList) Equal(other ref.Val) ref.Val {
 	if sz != oList.Size() {
 		return types.False
 	}
-	for i := types.Int(0); i < sz; i++ {
+	for i := range types.Int(sz) {
 		eq := t.Get(i).Equal(oList.Get(i))
 		if eq != types.True {
 			return eq // either false or error
@@ -287,7 +300,7 @@ func (t *typedList) Type() ref.Type {
 }
 
 func (t *typedList) Value() interface{} {
-	return t.value
+	return t.value.Interface()
 }
 
 func (t *typedList) Add(other ref.Val) ref.Val {
@@ -295,13 +308,16 @@ func (t *typedList) Add(other ref.Val) ref.Val {
 	if !ok {
 		return types.MaybeNoSuchOverloadErr(other)
 	}
-	resultValue := t.value
-	for it := oList.Iterator(); it.HasNext() == types.True; {
-		next := it.Next().Value()
-		resultValue = reflect.Append(resultValue, reflect.ValueOf(next))
+	sz := t.value.Len()
+	otherSz, _ := oList.Size().(types.Int)
+	elements := make([]ref.Val, 0, sz+int(otherSz))
+	for i := range sz {
+		elements = append(elements, t.Get(types.Int(i)))
 	}
-
-	return &typedList{value: resultValue, itemsSchema: t.itemsSchema}
+	for it := oList.Iterator(); it.HasNext() == types.True; {
+		elements = append(elements, it.Next())
+	}
+	return types.NewRefValList(types.DefaultTypeAdapter, elements)
 }
 
 func (t *typedList) Contains(val ref.Val) ref.Val {
@@ -310,7 +326,7 @@ func (t *typedList) Contains(val ref.Val) ref.Val {
 	}
 	var err ref.Val
 	sz := t.value.Len()
-	for i := 0; i < sz; i++ {
+	for i := range sz {
 		elem := TypedToVal(t.value.Index(i).Interface(), t.itemsSchema)
 		cmp := elem.Equal(val)
 		b, ok := cmp.(types.Bool)
@@ -342,7 +358,7 @@ func (t *typedList) Get(idx ref.Val) ref.Val {
 func (t *typedList) Iterator() traits.Iterator {
 	elements := make([]ref.Val, t.value.Len())
 	sz := t.value.Len()
-	for i := 0; i < sz; i++ {
+	for i := range sz {
 		elements[i] = TypedToVal(t.value.Index(i).Interface(), t.itemsSchema)
 	}
 	return &sliceIter{typedList: t, elements: elements}
@@ -373,6 +389,10 @@ func (it *sliceIter) Next() ref.Val {
 
 type typedMapList struct {
 	typedList
+	// keyProps are unescaped JSON property names
+	keyProps []string
+
+	// escapedKeyProps are escaped CEL identifiers
 	escapedKeyProps []string
 
 	sync.Once // for lazy load of mapOfList since it is only needed if Equals is called
@@ -383,7 +403,7 @@ func (t *typedMapList) getMap() map[interface{}]interface{} {
 	t.Do(func() {
 		sz := t.value.Len()
 		t.mapOfList = make(map[interface{}]interface{}, sz)
-		for i := types.Int(0); i < types.Int(sz); i++ {
+		for i := range types.Int(sz) {
 			v := t.Get(i)
 			e := reflect.ValueOf(v.Value())
 			t.mapOfList[t.toMapKey(e)] = e.Interface()
@@ -401,32 +421,50 @@ func (t *typedMapList) toMapKey(element reflect.Value) interface{} {
 	}
 	cacheEntry := value.TypeReflectEntryOf(element.Type())
 	var fieldEntries []*value.FieldCacheEntry
-	for i := 0; i < len(t.escapedKeyProps); i++ {
-		if ce, ok := cacheEntry.Fields()[t.escapedKeyProps[i]]; !ok {
+	for i := range len(t.keyProps) {
+		if ce, ok := cacheEntry.Fields()[t.keyProps[i]]; !ok { // Fields() is keyed by unescaped JSON property names.
 			return types.NewErr("unexpected data format for element of array with x-kubernetes-list-type=map: %T", element)
 		} else {
 			fieldEntries = append(fieldEntries, ce)
 		}
 	}
 
+	getKeyValue := func(fieldEntry *value.FieldCacheEntry) interface{} {
+		v := fieldEntry.GetFrom(element)
+		for v.Kind() == reflect.Pointer {
+			if v.IsNil() {
+				return nil
+			}
+			v = v.Elem()
+		}
+		raw := v.Interface()
+		if raw != nil && !reflect.TypeOf(raw).Comparable() {
+			// %#v includes type information and quotes strings, so the
+			// serialized form cannot collide with a comparable raw value.
+			return fmt.Sprintf("%#v", raw)
+		}
+		return raw
+	}
+
 	// Arrays are comparable in go and may be used as map keys, but maps and slices are not.
 	// So we can special case small numbers of key props as arrays and fall back to serialization
 	// for larger numbers of key props
 	if len(fieldEntries) == 1 {
-		return fieldEntries[0].GetFrom(element).Interface()
+		return getKeyValue(fieldEntries[0])
 	}
 	if len(fieldEntries) == 2 {
-		return [2]interface{}{fieldEntries[0].GetFrom(element).Interface(), fieldEntries[1].GetFrom(element).Interface()}
+		return [2]interface{}{getKeyValue(fieldEntries[0]), getKeyValue(fieldEntries[1])}
 	}
 	if len(fieldEntries) == 3 {
-		return [3]interface{}{fieldEntries[0].GetFrom(element).Interface(), fieldEntries[1].GetFrom(element).Interface(), fieldEntries[3].GetFrom(element).Interface()}
+		return [3]interface{}{getKeyValue(fieldEntries[0]), getKeyValue(fieldEntries[1]), getKeyValue(fieldEntries[2])}
 	}
 
 	key := make([]interface{}, len(fieldEntries))
 	for i := range fieldEntries {
-		key[i] = fieldEntries[i].GetFrom(element).Interface()
+		key[i] = getKeyValue(fieldEntries[i])
 	}
-	return fmt.Sprintf("%v", key)
+	// Serialize to a string for more than 3 keys. %#v quotes strings.
+	return fmt.Sprintf("%#v", key)
 }
 
 // Equal on a map list ignores list element order.
@@ -459,36 +497,138 @@ func (t *typedMapList) Equal(other ref.Val) ref.Val {
 // are overwritten by values in `Y` when the key sets of `X` and `Y` intersect. Elements in `Y` with
 // non-intersecting keys are appended, retaining their partial order.
 func (t *typedMapList) Add(other ref.Val) ref.Val {
-	sliceType := t.value.Type()
-	elementType := sliceType.Elem()
 	oMapList, ok := other.(traits.Lister)
 	if !ok {
 		return types.MaybeNoSuchOverloadErr(other)
 	}
 	sz := t.value.Len()
-	elements := reflect.MakeSlice(sliceType, sz, sz)
-	keyToIdx := map[interface{}]int{}
-	for i := 0; i < sz; i++ {
-		e := t.Get(types.Int(i)).Value()
-		re := reflect.ValueOf(e)
-		k := t.toMapKey(re)
-		keyToIdx[k] = i
-		elements.Index(i).Set(re.Convert(elementType))
+	elements := make([]ref.Val, sz)
+	for i := range sz {
+		elements[i] = t.Get(types.Int(i))
 	}
-	for it := oMapList.Iterator(); it.HasNext() == types.True; {
-		e := it.Next()
-		re := reflect.ValueOf(e.Value())
-		k := t.toMapKey(re)
+	return addToMapList(elements, oMapList, t.escapedKeyProps)
+}
+
+// addToMapList merges the elements of other into the given map list elements
+// according to x-kubernetes-list-type=map semantics: elements of other with
+// intersecting keys overwrite the matching entries of elements in place, and
+// elements with non-intersecting keys are appended. elements may be mutated in
+// place and may be appended to, so callers must not retain or reuse elements
+// after the call.
+//
+// escapedKeyProps must contain the escaped CEL identifiers keys.
+func addToMapList(elements []ref.Val, other traits.Lister, escapedKeyProps []string) ref.Val {
+	keyToIdx := make(map[interface{}]int, len(elements))
+	for i, e := range elements {
+		keyToIdx[refValMapKey(e, escapedKeyProps)] = i
+	}
+	for it := other.Iterator(); it.HasNext() == types.True; {
+		v := it.Next()
+		k := refValMapKey(v, escapedKeyProps)
 		if overwritePosition, ok := keyToIdx[k]; ok {
-			elements.Index(overwritePosition).Set(re)
+			elements[overwritePosition] = v
 		} else {
-			elements = reflect.Append(elements, re.Convert(elementType))
+			elements = append(elements, v)
 		}
 	}
-	return &typedMapList{
-		typedList:       typedList{value: elements, itemsSchema: t.itemsSchema},
-		escapedKeyProps: t.escapedKeyProps,
+	return &refValMapList{
+		Lister:          types.NewRefValList(types.DefaultTypeAdapter, elements),
+		escapedKeyProps: escapedKeyProps,
 	}
+}
+
+// refValMapKey returns a valid golang map key for the given element of a map list.
+// escapedKeyProps must contain the escaped CEL identifiers of the keys.
+func refValMapKey(element ref.Val, escapedKeyProps []string) interface{} {
+	get := func(escapedProp string) interface{} {
+		key := types.String(escapedProp)
+		var v ref.Val
+		var found bool
+		switch e := element.(type) {
+		case traits.Mapper:
+			v, found = e.Find(key)
+		case traits.Indexer:
+			if tester, ok := element.(traits.FieldTester); ok {
+				found = tester.IsSet(key) == types.True
+			}
+			if found {
+				v = e.Get(key)
+			}
+		}
+		if !found || v == nil || types.IsUnknownOrError(v) {
+			return nil
+		}
+		raw := v.Value()
+		if raw != nil && !reflect.TypeOf(raw).Comparable() {
+			// %#v includes type information and quotes strings, so the
+			// serialized form cannot collide with a comparable raw value.
+			return fmt.Sprintf("%#v", raw)
+		}
+		return raw
+	}
+
+	if len(escapedKeyProps) == 1 {
+		return get(escapedKeyProps[0])
+	}
+	if len(escapedKeyProps) == 2 {
+		return [2]interface{}{get(escapedKeyProps[0]), get(escapedKeyProps[1])}
+	}
+	if len(escapedKeyProps) == 3 {
+		return [3]interface{}{get(escapedKeyProps[0]), get(escapedKeyProps[1]), get(escapedKeyProps[2])}
+	}
+
+	key := make([]interface{}, len(escapedKeyProps))
+	for i, kf := range escapedKeyProps {
+		key[i] = get(kf)
+	}
+	// Serialize to a string for more than 3 keys. %#v quotes strings.
+	return fmt.Sprintf("%#v", key)
+}
+
+type refValMapList struct {
+	traits.Lister
+	escapedKeyProps []string
+}
+
+func (l *refValMapList) Add(other ref.Val) ref.Val {
+	oMapList, ok := other.(traits.Lister)
+	if !ok {
+		return types.MaybeNoSuchOverloadErr(other)
+	}
+	sz, _ := l.Size().(types.Int)
+	elements := make([]ref.Val, int(sz))
+	for i := range types.Int(sz) {
+		elements[i] = l.Get(i)
+	}
+	return addToMapList(elements, oMapList, l.escapedKeyProps)
+}
+
+func (l *refValMapList) Equal(other ref.Val) ref.Val {
+	oMapList, ok := other.(traits.Lister)
+	if !ok {
+		return types.MaybeNoSuchOverloadErr(other)
+	}
+	sz, _ := l.Size().(types.Int)
+	if sz != oMapList.Size() {
+		return types.False
+	}
+	keyToElement := make(map[interface{}]ref.Val, int(sz))
+	for i := range types.Int(sz) {
+		e := l.Get(i)
+		keyToElement[refValMapKey(e, l.escapedKeyProps)] = e
+	}
+	for it := oMapList.Iterator(); it.HasNext() == types.True; {
+		v := it.Next()
+		e, ok := keyToElement[refValMapKey(v, l.escapedKeyProps)]
+		if !ok {
+			return types.False
+		}
+		eq := e.Equal(v)
+		if eq != types.True {
+			return eq
+		}
+	}
+	return types.True
 }
 
 type typedSetList struct {
@@ -504,7 +644,7 @@ func (t *typedSetList) getSet() map[interface{}]struct{} {
 	t.Do(func() {
 		sz := t.value.Len()
 		t.set = make(map[interface{}]struct{}, sz)
-		for i := types.Int(0); i < types.Int(sz); i++ {
+		for i := range types.Int(sz) {
 			e := t.Get(i).Value()
 			t.set[e] = struct{}{}
 		}
@@ -572,7 +712,7 @@ type typedMap struct {
 func (t *typedMap) ConvertToNative(typeDesc reflect.Type) (interface{}, error) {
 	switch typeDesc.Kind() {
 	case reflect.Map:
-		return t.value, nil
+		return t.value.Interface(), nil
 	default:
 		return nil, fmt.Errorf("type conversion error from '%s' to '%s'", t.Type(), typeDesc)
 	}
@@ -617,7 +757,7 @@ func (t *typedMap) Type() ref.Type {
 }
 
 func (t *typedMap) Value() interface{} {
-	return t.value
+	return t.value.Interface()
 }
 
 func (t *typedMap) Contains(key ref.Val) ref.Val {
@@ -641,6 +781,8 @@ func (t *typedMap) Size() ref.Val {
 	return types.Int(t.value.Len())
 }
 
+// Find returns the value of the map entry for the given key, if present. The map keys
+// are normal strings, not CEL identifiers, and are not escaped.
 func (t *typedMap) Find(key ref.Val) (ref.Val, bool) {
 	keyStr, ok := key.(types.String)
 	if !ok {

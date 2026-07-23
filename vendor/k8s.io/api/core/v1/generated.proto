@@ -185,6 +185,7 @@ message Binding {
   // Standard object's metadata.
   // More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata
   // +optional
+  // +k8s:opaqueType
   optional .k8s.io.apimachinery.pkg.apis.meta.v1.ObjectMeta metadata = 1;
 
   // The target object that you want to bind to the standard object.
@@ -495,6 +496,7 @@ message ComponentStatus {
   // Standard object's metadata.
   // More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata
   // +optional
+  // +k8s:opaqueType
   optional .k8s.io.apimachinery.pkg.apis.meta.v1.ObjectMeta metadata = 1;
 
   // List of component conditions observed
@@ -2562,6 +2564,7 @@ message NFSVolumeSource {
 // Namespace provides a scope for Names.
 // Use of multiple namespaces is optional.
 // +k8s:supportsSubresource="/status"
+// +k8s:supportsSubresource="/finalize"
 message Namespace {
   // Standard object's metadata.
   // More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata
@@ -3415,6 +3418,7 @@ message PersistentVolumeClaimStatus {
   // for the volume bound to this claim.
   // +featureGate=CSIVolumeHealth
   // +optional
+  // +k8s:optional
   optional VolumeHealthStatus healthStatus = 10;
 }
 
@@ -3426,6 +3430,7 @@ message PersistentVolumeClaimTemplate {
   // validation.
   //
   // +optional
+  // +k8s:opaqueType
   optional .k8s.io.apimachinery.pkg.apis.meta.v1.ObjectMeta metadata = 1;
 
   // The specification for the PersistentVolumeClaim. The entire content is
@@ -5017,6 +5022,7 @@ message PodStatus {
   // +optional
   // +listType=map
   // +listMapKey=name
+  // +k8s:optional
   repeated PodVolumeHealth volumeHealth = 22;
 }
 
@@ -5049,6 +5055,7 @@ message PodTemplateSpec {
   // Standard object's metadata.
   // More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata
   // +optional
+  // +k8s:opaqueType
   optional .k8s.io.apimachinery.pkg.apis.meta.v1.ObjectMeta metadata = 1;
 
   // Specification of the desired behavior of the pod.
@@ -5068,7 +5075,10 @@ message PodVolumeHealth {
   // +optional
   // +listType=map
   // +listMapKey=status
+  // +patchMergeKey=status
+  // +patchStrategy=merge
   // +listMapKey=reason
+  // +k8s:optional
   repeated VolumeHealthCondition healthConditions = 2;
 
   // lastTransitionTime is when the current set of conditions first appeared.
@@ -5383,6 +5393,7 @@ message RangeAllocation {
   // Standard object's metadata.
   // More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata
   // +optional
+  // +k8s:opaqueType
   optional .k8s.io.apimachinery.pkg.apis.meta.v1.ObjectMeta metadata = 1;
 
   // Range is string that identifies the range represented by 'data'.
@@ -5398,8 +5409,8 @@ message ReplicationController {
   // be the same as the Pod(s) that the replication controller manages.
   // Standard object's metadata. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata
   // +optional
-  // +k8s:alpha(since: "1.36")=+k8s:subfield(name)=+k8s:optional
-  // +k8s:alpha(since: "1.36")=+k8s:subfield(name)=+k8s:format=k8s-long-name
+  // +k8s:beta(since: "1.37")=+k8s:subfield(name)=+k8s:optional
+  // +k8s:beta(since: "1.37")=+k8s:subfield(name)=+k8s:format=k8s-long-name
   optional .k8s.io.apimachinery.pkg.apis.meta.v1.ObjectMeta metadata = 1;
 
   // Spec defines the specification of the desired behavior of the replication controller.
@@ -5456,18 +5467,18 @@ message ReplicationControllerSpec {
   // Defaults to 1.
   // More info: https://kubernetes.io/docs/concepts/workloads/controllers/replicationcontroller#what-is-a-replicationcontroller
   // +optional
-  // +k8s:alpha(since: "1.36")=+k8s:optional
+  // +k8s:beta(since: "1.37")=+k8s:optional
   // +default=1
-  // +k8s:alpha(since: "1.36")=+k8s:minimum=0
+  // +k8s:beta(since: "1.37")=+k8s:minimum=0
   optional int32 replicas = 1;
 
   // Minimum number of seconds for which a newly created pod should be ready
   // without any of its container crashing, for it to be considered available.
   // Defaults to 0 (pod will be considered available as soon as it is ready)
   // +optional
-  // +k8s:alpha(since: "1.36")=+k8s:optional
+  // +k8s:beta(since: "1.37")=+k8s:optional
   // +default=0
-  // +k8s:alpha(since: "1.36")=+k8s:minimum=0
+  // +k8s:beta(since: "1.37")=+k8s:minimum=0
   optional int32 minReadySeconds = 4;
 
   // Selector is a label query over pods that should match the Replicas count.
@@ -6933,10 +6944,15 @@ message VolumeHealthCondition {
 
   // reason is a brief CamelCase machine-parseable reason.
   // Together with status it forms the unique identity of a condition entry.
+  // +k8s:maxLength=256
+  // +k8s:required
+  // +required
   optional string reason = 2;
 
   // message is a human-readable description.
   // +optional
+  // +k8s:optional
+  // +k8s:maxLength=1024
   optional string message = 3;
 }
 
@@ -6948,7 +6964,11 @@ message VolumeHealthStatus {
   // +optional
   // +listType=map
   // +listMapKey=status
+  // +patchMergeKey=status
+  // +patchStrategy=merge
   // +listMapKey=reason
+  // +k8s:maxItems=16
+  // +k8s:optional
   repeated VolumeHealthCondition healthConditions = 1;
 
   // lastTransitionTime is when the current set of conditions first appeared.
