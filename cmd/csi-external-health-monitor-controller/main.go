@@ -42,7 +42,6 @@ import (
 	"github.com/kubernetes-csi/csi-lib-utils/metrics"
 	"github.com/kubernetes-csi/csi-lib-utils/rpc"
 	"github.com/kubernetes-csi/csi-lib-utils/standardflags"
-	"google.golang.org/grpc"
 
 	monitorcontroller "github.com/kubernetes-csi/external-health-monitor/pkg/controller"
 	"github.com/kubernetes-csi/external-health-monitor/pkg/features"
@@ -175,24 +174,15 @@ func main() {
 		klog.FlushAndExit(klog.ExitFlushTimeout, 1)
 	}
 
-	supportListVolumeHealth, err := supportsControllerCapability(cancelationCtx, csiConn, csi.ControllerServiceCapability_RPC_LIST_VOLUME_HEALTH)
+	caps, err := rpc.GetControllerCapabilities(cancelationCtx, csiConn)
 	if err != nil {
-		logger.Error(err, "Failed to check whether the CSI driver supports ControllerListVolumeHealth")
+		logger.Error(err, "Failed to get the CSI driver's controller capabilities")
 		klog.FlushAndExit(klog.ExitFlushTimeout, 1)
 	}
 
-	supportGetVolumeHealth, err := supportsControllerCapability(cancelationCtx, csiConn, csi.ControllerServiceCapability_RPC_GET_VOLUME_HEALTH)
+	supportListVolumeHealth, err := healthMode(caps)
 	if err != nil {
-		logger.Error(err, "Failed to check whether the CSI driver supports ControllerGetVolumeHealth")
-		klog.FlushAndExit(klog.ExitFlushTimeout, 1)
-	}
-
-	if !supportListVolumeHealth && !supportGetVolumeHealth {
-		logger.V(2).Info("CSI driver supports neither ControllerListVolumeHealth nor ControllerGetVolumeHealth, exiting")
-		klog.FlushAndExit(klog.ExitFlushTimeout, 1)
-	}
-	if supportListVolumeHealth && !supportGetVolumeHealth {
-		logger.Error(nil, "CSI driver supports ControllerListVolumeHealth without required ControllerGetVolumeHealth")
+		logger.Error(err, "The CSI driver cannot be monitored")
 		klog.FlushAndExit(klog.ExitFlushTimeout, 1)
 	}
 
@@ -262,11 +252,18 @@ func main() {
 	)
 }
 
-func supportsControllerCapability(ctx context.Context, csiConn *grpc.ClientConn, capability csi.ControllerServiceCapability_RPC_Type) (bool, error) {
-	caps, err := rpc.GetControllerCapabilities(ctx, csiConn)
-	if err != nil {
-		return false, fmt.Errorf("failed to get controller capabilities: %v", err)
-	}
+// healthMode decides how the driver is monitored based on its advertised
+// controller capabilities, returning whether ControllerListVolumeHealth is
+// used over per-volume ControllerGetVolumeHealth calls.
+func healthMode(caps rpc.ControllerCapabilitySet) (useListVolumeHealth bool, err error) {
+	supportsList := caps[csi.ControllerServiceCapability_RPC_LIST_VOLUME_HEALTH]
+	supportsGet := caps[csi.ControllerServiceCapability_RPC_GET_VOLUME_HEALTH]
 
-	return caps[capability], nil
+	if !supportsList && !supportsGet {
+		return false, fmt.Errorf("the CSI driver supports neither ControllerListVolumeHealth nor ControllerGetVolumeHealth")
+	}
+	if supportsList && !supportsGet {
+		return false, fmt.Errorf("the CSI driver supports ControllerListVolumeHealth without ControllerGetVolumeHealth, which the CSI specification requires alongside it")
+	}
+	return supportsList, nil
 }
