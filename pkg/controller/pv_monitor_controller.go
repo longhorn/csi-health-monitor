@@ -55,7 +55,7 @@ type PVMonitorController struct {
 
 	// used for updating the pvEnqueued map
 	sync.Mutex
-	// pvEnqueued stores all CSI PVs which are enqueued
+	// pvEnqueued stores CSI PVs enrolled in the recurring monitoring loop.
 	pvEnqueued map[string]bool
 	// we get PVs from pvQueue to check their health conditions
 	pvQueue workqueue.Interface
@@ -239,6 +239,15 @@ func (ctrl *PVMonitorController) enqueuePV(pvName string) {
 	}
 }
 
+// requeuePV adds a PV back to the worker queue only while it remains enrolled.
+func (ctrl *PVMonitorController) requeuePV(pvName string) {
+	ctrl.Lock()
+	defer ctrl.Unlock()
+	if ctrl.pvEnqueued[pvName] {
+		ctrl.pvQueue.Add(pvName)
+	}
+}
+
 // forgetPV takes a PV out of the monitoring loop so that a later
 // AddPVsToQueue pass can pick it up again, e.g. once a pending PV
 // becomes bound.
@@ -268,7 +277,7 @@ func (ctrl *PVMonitorController) checkPVWorker(ctx context.Context) {
 			return
 		}
 		logger.Error(err, "Error getting PersistentVolume", "pv", pvName)
-		ctrl.pvQueue.Add(pvName)
+		ctrl.requeuePV(pvName)
 		return
 	}
 
@@ -289,6 +298,5 @@ func (ctrl *PVMonitorController) checkPVWorker(ctx context.Context) {
 		logger.Error(err, "Check controller volume health error")
 	}
 
-	// re-enqueue anyway
-	ctrl.pvQueue.Add(pvName)
+	ctrl.requeuePV(pvName)
 }

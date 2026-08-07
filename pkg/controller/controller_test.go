@@ -10,6 +10,7 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2/ktesting"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
@@ -130,6 +131,45 @@ func Test_PendingPVIsMonitoredOnceBound(t *testing.T) {
 	ctrl.checkPVWorker(ctx)
 
 	assert.Len(drv.Controller.GetVolumeHealthRequests(), 1, "bound PV must be health-checked")
+	assert.Equal(1, ctrl.pvQueue.Len(), "tracked PV must be re-enqueued")
+}
+
+func Test_RequeuePVRequiresTracking(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		forget  bool
+		wantLen int
+	}{
+		{
+			name:    "tracked",
+			wantLen: 1,
+		},
+		{
+			name:    "forgotten",
+			forget:  true,
+			wantLen: 0,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := &PVMonitorController{
+				pvEnqueued: make(map[string]bool),
+				pvQueue:    workqueue.New(),
+			}
+			t.Cleanup(ctrl.pvQueue.ShutDown)
+
+			ctrl.enqueuePV("pv")
+			key, quit := ctrl.pvQueue.Get()
+			assert.False(t, quit)
+			if tc.forget {
+				ctrl.forgetPV("pv")
+			}
+
+			ctrl.requeuePV("pv")
+			ctrl.pvQueue.Done(key)
+
+			assert.Equal(t, tc.wantLen, ctrl.pvQueue.Len())
+		})
+	}
 }
 
 func Test_PVUnboundAtPopIsForgottenAndPickedUpAgain(t *testing.T) {
