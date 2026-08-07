@@ -223,15 +223,20 @@ func (ctrl *PVMonitorController) AddPVsToQueue() error {
 		if pv.Status.Phase != v1.VolumeBound || pv.DeletionTimestamp != nil {
 			continue
 		}
-		ctrl.Lock()
-		if !ctrl.pvEnqueued[pv.Name] {
-			ctrl.pvEnqueued[pv.Name] = true
-			ctrl.pvQueue.Add(pv.Name)
-		}
-		ctrl.Unlock()
+		ctrl.enqueuePV(pv.Name)
 	}
 
 	return nil
+}
+
+// enqueuePV adds a PV to the worker queue once, until forgetPV releases it.
+func (ctrl *PVMonitorController) enqueuePV(pvName string) {
+	ctrl.Lock()
+	defer ctrl.Unlock()
+	if !ctrl.pvEnqueued[pvName] {
+		ctrl.pvEnqueued[pvName] = true
+		ctrl.pvQueue.Add(pvName)
+	}
 }
 
 // forgetPV takes a PV out of the monitoring loop so that a later

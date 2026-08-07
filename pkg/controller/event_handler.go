@@ -27,11 +27,7 @@ func (ctrl *PVMonitorController) pvAdded(obj interface{}) {
 		return
 	}
 
-	ctrl.Lock()
-	defer ctrl.Unlock()
-
-	ctrl.pvQueue.Add(pv.Name)
-	ctrl.pvEnqueued[pv.Name] = true
+	ctrl.enqueuePV(pv.Name)
 }
 
 func (ctrl *PVMonitorController) pvDeleted(obj interface{}) {
