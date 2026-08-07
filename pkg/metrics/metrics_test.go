@@ -49,29 +49,24 @@ func TestObserveProbe_DurationObserved(t *testing.T) {
 func TestVolumeHealth_SetAndClear(t *testing.T) {
 	m, reg := newRegistered(t)
 
-	// Two conditions on one PVC -> two gauge series.
-	m.SetVolumeHealth("ns", "pvc1", [][2]string{
-		{"Inaccessible", "VolumeNotFound"},
-		{"Degraded", "SlowIO"},
-	})
+	// Repeated statuses, which may come from different reasons, share one series.
+	m.SetVolumeHealth("ns", "pvc1", []string{"Inaccessible", "Degraded", "Degraded"})
 	if got := mustCount(t, reg, ControllerVolumeHealthStatusName); got != 2 {
 		t.Errorf("after Set: expected 2 gauge series, got %d", got)
 	}
 
 	expected := `
-# HELP csi_controller_volume_health_status [ALPHA] Per-condition controller-reported health for every unhealthy volume. Value is 1 while the (status, reason) condition is present on the PVC.
+# HELP csi_controller_volume_health_status [ALPHA] Controller-reported health for every unhealthy volume. Value is 1 while a condition with the given status is present on the PVC.
 # TYPE csi_controller_volume_health_status gauge
-csi_controller_volume_health_status{namespace="ns",persistentvolumeclaim="pvc1",reason="SlowIO",status="Degraded"} 1
-csi_controller_volume_health_status{namespace="ns",persistentvolumeclaim="pvc1",reason="VolumeNotFound",status="Inaccessible"} 1
+csi_controller_volume_health_status{namespace="ns",persistentvolumeclaim="pvc1",status="Degraded"} 1
+csi_controller_volume_health_status{namespace="ns",persistentvolumeclaim="pvc1",status="Inaccessible"} 1
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected), ControllerVolumeHealthStatusName); err != nil {
 		t.Errorf("gauge mismatch: %v", err)
 	}
 
-	// Reducing to a single condition must drop the stale series.
-	m.SetVolumeHealth("ns", "pvc1", [][2]string{
-		{"Degraded", "SlowIO"},
-	})
+	// Reducing to a single status must drop the stale series.
+	m.SetVolumeHealth("ns", "pvc1", []string{"Degraded"})
 	if got := mustCount(t, reg, ControllerVolumeHealthStatusName); got != 1 {
 		t.Errorf("after reduce: expected 1 gauge series, got %d", got)
 	}
@@ -86,8 +81,8 @@ csi_controller_volume_health_status{namespace="ns",persistentvolumeclaim="pvc1",
 func TestVolumeHealth_ClearIsScopedToPVC(t *testing.T) {
 	m, reg := newRegistered(t)
 
-	m.SetVolumeHealth("ns", "pvc1", [][2]string{{"Degraded", "SlowIO"}})
-	m.SetVolumeHealth("ns", "pvc2", [][2]string{{"Inaccessible", "Gone"}})
+	m.SetVolumeHealth("ns", "pvc1", []string{"Degraded"})
+	m.SetVolumeHealth("ns", "pvc2", []string{"Inaccessible"})
 	if got := mustCount(t, reg, ControllerVolumeHealthStatusName); got != 2 {
 		t.Fatalf("setup: expected 2 series, got %d", got)
 	}
@@ -102,7 +97,7 @@ func TestVolumeHealth_ClearIsScopedToPVC(t *testing.T) {
 func TestDeletePVCSeries_UnregisteredNoPanic(t *testing.T) {
 	m := New() // not registered
 	m.ClearVolumeHealth("ns", "pvc1")
-	m.SetVolumeHealth("ns", "pvc1", [][2]string{{"Degraded", "X"}})
+	m.SetVolumeHealth("ns", "pvc1", []string{"Degraded"})
 }
 
 func mustCount(t *testing.T, reg k8smetrics.KubeRegistry, name string) int {

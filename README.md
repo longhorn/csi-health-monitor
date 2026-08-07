@@ -110,7 +110,7 @@ The sidecar exposes the following metrics when `--http-endpoint` is set:
 
 - `csi_volume_health_probe_total`: cumulative count of health probes, broken down by CSI method and result.
 - `csi_volume_health_probe_duration_seconds`: health probe RPC latency, broken down by CSI method.
-- `csi_controller_volume_health_status`: one series per `(status, reason)` condition currently reported on an unhealthy volume's PVC, with value 1.
+- `csi_controller_volume_health_status`: one series per condition status currently reported on an unhealthy volume's PVC, with value 1.
 - `csi_volume_health_status_writes_dropped_total`: cumulative count of status writes dropped by the API server, which indicates the `CSIVolumeHealth` feature gate is disabled.
 - `csi_volume_health_unknown_condition_total`: cumulative count of health entries observed with a CSI error type unknown to this sidecar, broken down by the raw CSI status value.
 

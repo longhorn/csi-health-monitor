@@ -376,7 +376,7 @@ func unknownConditionsDetails(unknown []UnknownCondition) string {
 	return strings.Join(entries, "; ")
 }
 
-// One gauge series per (status, reason) while unhealthy; all removed on recovery. Safe when
+// One gauge series per status while unhealthy; all removed on recovery. Safe when
 // metrics is nil.
 func (checker *PVHealthConditionChecker) updateVolumeHealthGauge(namespace, name string, desired []v1.VolumeHealthCondition) {
 	if checker.metrics == nil {
@@ -386,9 +386,9 @@ func (checker *PVHealthConditionChecker) updateVolumeHealthGauge(namespace, name
 		checker.metrics.ClearVolumeHealth(namespace, name)
 		return
 	}
-	pairs := make([][2]string, 0, len(desired))
+	statuses := make([]string, 0, len(desired))
 	for _, c := range desired {
-		pairs = append(pairs, [2]string{string(c.Status), c.Reason})
+		statuses = append(statuses, string(c.Status))
 	}
-	checker.metrics.SetVolumeHealth(namespace, name, pairs)
+	checker.metrics.SetVolumeHealth(namespace, name, statuses)
 }

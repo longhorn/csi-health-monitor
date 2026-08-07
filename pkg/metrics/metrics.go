@@ -28,7 +28,6 @@ const (
 	labelNamespace = "namespace"
 	labelPVC       = "persistentvolumeclaim"
 	labelStatus    = "status"
-	labelReason    = "reason"
 )
 
 type Metrics struct {
@@ -61,10 +60,10 @@ func New() *Metrics {
 		volumeHealthVec: k8smetrics.NewGaugeVec(
 			&k8smetrics.GaugeOpts{
 				Name:           ControllerVolumeHealthStatusName,
-				Help:           "Per-condition controller-reported health for every unhealthy volume. Value is 1 while the (status, reason) condition is present on the PVC.",
+				Help:           "Controller-reported health for every unhealthy volume. Value is 1 while a condition with the given status is present on the PVC.",
 				StabilityLevel: k8smetrics.ALPHA,
 			},
-			[]string{labelNamespace, labelPVC, labelStatus, labelReason},
+			[]string{labelNamespace, labelPVC, labelStatus},
 		),
 		statusWritesDropped: k8smetrics.NewCounter(
 			&k8smetrics.CounterOpts{
@@ -110,11 +109,11 @@ func (m *Metrics) ObserveProbe(method string, durationSeconds float64, err error
 	m.probeTotal.WithLabelValues(method, result).Inc()
 }
 
-// Replaces all of the PVC's series with exactly the given conditions; an empty set clears it.
-func (m *Metrics) SetVolumeHealth(namespace, pvc string, conditions [][2]string) {
+// Replaces all of the PVC's series with exactly the given statuses; an empty set clears it.
+func (m *Metrics) SetVolumeHealth(namespace, pvc string, statuses []string) {
 	m.deletePVCSeries(namespace, pvc)
-	for _, c := range conditions {
-		m.volumeHealthVec.WithLabelValues(namespace, pvc, c[0], c[1]).Set(1)
+	for _, s := range statuses {
+		m.volumeHealthVec.WithLabelValues(namespace, pvc, s).Set(1)
 	}
 }
 
