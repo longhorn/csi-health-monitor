@@ -61,9 +61,10 @@ type PVHealthConditionChecker struct {
 	// volumeStateMu guards volumes, which is mutated from the Get-mode workers
 	// and the List-mode goroutine.
 	volumeStateMu sync.Mutex
-	// volumes is what the checker remembers about each volume between cycles,
-	// keyed by the namespace/name of the bound PVC. PVC status remains the
-	// durable source of truth.
+	// volumes holds reconciliation state per bound PVC (namespace/name). It
+	// suppresses duplicate patches while the informer lags behind our own
+	// write and flags absent volumes that need a recovery check. PVC status
+	// remains the durable source of truth.
 	volumes map[string]volumeState
 
 	// fieldDropped tracks whether the API server is currently dropping
