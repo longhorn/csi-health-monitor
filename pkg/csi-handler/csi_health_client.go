@@ -65,7 +65,7 @@ func (client *csiHealthClient) ControllerListVolumeHealth(ctx context.Context) (
 	for {
 		rsp, err := client.listVolumeHealthPage(ctx, token)
 		if err != nil {
-			return nil, fmt.Errorf("failed to list volume health: %v", err)
+			return nil, fmt.Errorf("list volume health: %w", err)
 		}
 
 		for _, vh := range rsp.GetEntries() {

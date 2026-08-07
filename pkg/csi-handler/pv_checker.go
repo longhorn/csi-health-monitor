@@ -156,13 +156,13 @@ func (checker *PVHealthConditionChecker) CheckControllerListVolumeHealth(ctx con
 		health, present := result[volumeHandle]
 		if present {
 			if err := checker.reconcileAndTrack(ctx, pvc, health); err != nil {
-				logger.Error(err, "Reconcile PVC health status error", "pvc", pvc.Name)
+				logger.Error(err, "Reconcile PVC health status error", "pvc", klog.KObj(pvc))
 			}
 			continue
 		}
 
 		if err := checker.handleAbsentInListCycle(ctx, pvc, volumeHandle); err != nil {
-			logger.Error(err, "Recover PVC health status error", "pvc", pvc.Name)
+			logger.Error(err, "Recover PVC health status error", "pvc", klog.KObj(pvc))
 		}
 	}
 
@@ -209,10 +209,9 @@ func (checker *PVHealthConditionChecker) CheckControllerVolumeHealth(ctx context
 		return fmt.Errorf("PV %s is bound but has no claimRef", pv.Name)
 	}
 
-	logger := klog.FromContext(ctx)
 	volumeHandle, err := checker.GetVolumeHandle(pv)
 	if err != nil {
-		logger.Error(err, "Get volume handle error")
+		// The caller logs returned errors.
 		return err
 	}
 
@@ -272,6 +271,12 @@ func (checker *PVHealthConditionChecker) reconcileAndTrack(ctx context.Context, 
 		if !persisted {
 			// The API server dropped the field; treat like a failed write.
 			return nil
+		}
+		logger := klog.FromContext(ctx)
+		if len(desired) > 0 {
+			logger.V(2).Info("Marked volume as unhealthy", "pvc", klog.KObj(pvc), "conditions", desired)
+		} else {
+			logger.V(2).Info("Marked volume as healthy", "pvc", klog.KObj(pvc))
 		}
 	}
 
