@@ -147,7 +147,7 @@ func (checker *PVHealthConditionChecker) CheckControllerListVolumeHealth(ctx con
 			continue
 		}
 
-		pvc, err := checker.pvcLister.PersistentVolumeClaims(pv.Spec.ClaimRef.Namespace).Get(pv.Spec.ClaimRef.Name)
+		pvc, err := checker.boundPVC(pv)
 		if err != nil {
 			logger.Error(err, "Get PVC error")
 			continue
@@ -228,12 +228,30 @@ func (checker *PVHealthConditionChecker) CheckControllerVolumeHealth(ctx context
 		return err
 	}
 
-	pvc, err := checker.pvcLister.PersistentVolumeClaims(pv.Spec.ClaimRef.Namespace).Get(pv.Spec.ClaimRef.Name)
+	pvc, err := checker.boundPVC(pv)
 	if err != nil {
 		return err
 	}
 
 	return checker.reconcileAndTrack(ctx, pvc, health)
+}
+
+// boundPVC resolves a PV's claimRef, rejecting a PVC that no longer belongs
+// to the PV (e.g. deleted and recreated while the PV informer was stale),
+// which would otherwise get another volume's health patched onto it.
+func (checker *PVHealthConditionChecker) boundPVC(pv *v1.PersistentVolume) (*v1.PersistentVolumeClaim, error) {
+	claimRef := pv.Spec.ClaimRef
+	pvc, err := checker.pvcLister.PersistentVolumeClaims(claimRef.Namespace).Get(claimRef.Name)
+	if err != nil {
+		return nil, err
+	}
+	if claimRef.UID != "" && pvc.UID != claimRef.UID {
+		return nil, fmt.Errorf("PVC %s/%s has UID %s, but PV %s claims UID %s", claimRef.Namespace, claimRef.Name, pvc.UID, pv.Name, claimRef.UID)
+	}
+	if pvc.Spec.VolumeName != pv.Name {
+		return nil, fmt.Errorf("PVC %s/%s is bound to PV %q, not PV %q", claimRef.Namespace, claimRef.Name, pvc.Spec.VolumeName, pv.Name)
+	}
+	return pvc, nil
 }
 
 // The driver's report is authoritative (overwrite, not merge), and a patch is issued only

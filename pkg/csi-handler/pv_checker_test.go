@@ -688,3 +688,39 @@ func Test_NoEventsWithoutUnknownConditions(t *testing.T) {
 
 	assert.Empty(drainEvents(checker.eventRecorder), "recognized conditions are reported via status, not events")
 }
+
+// A stale PV can reference a PVC that was deleted and recreated under the
+// same name; that PVC must not receive this volume's health.
+func Test_MismatchedPVCIsNotPatched(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		pvc  *v1.PersistentVolumeClaim
+	}{
+		{
+			name: "recreated claim with a new UID",
+			pvc:  mock.CreatePVC(1, 2, "pvc", "uid-new", mock.DefaultNS, "pv", v1.ClaimBound),
+		},
+		{
+			name: "claim bound to a different PV",
+			pvc:  mock.CreatePVC(1, 2, "pvc", "uid", mock.DefaultNS, "other-pv", v1.ClaimBound),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert := assert.New(t)
+			checker := createMockPVHealthConditionChecker(t)
+
+			pv := mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "1", "uid", &mock.BlockVolumeMode, v1.VolumeBound)
+			assert.Nil(checker.pvInformer.Informer().GetStore().Add(pv))
+			checker.seedPVC(t, tc.pvc)
+
+			_, ctx := ktesting.NewTestContext(t)
+			abnormal := &csi.ControllerGetVolumeHealthResponse{VolumeHealth: mock.AbnormalVolumeHealth("1")}
+			checker.csiControllerServer.SetGetVolumeHealth("1", abnormal, nil)
+
+			assert.Error(checker.pvHealthConditionChecker.CheckControllerVolumeHealth(ctx, pv))
+
+			patched, _ := healthStatusPatched(checker.fakeClient.Actions())
+			assert.False(patched, "a mismatched PVC must not be patched")
+		})
+	}
+}
