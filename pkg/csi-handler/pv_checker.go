@@ -19,6 +19,8 @@ package csi_handler
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -29,10 +31,13 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes"
 	corelisters "k8s.io/client-go/listers/core/v1"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 
 	"github.com/kubernetes-csi/external-health-monitor/pkg/metrics"
 )
+
+const eventReasonUnknownHealthCondition = "UnknownVolumeHealthCondition"
 
 // PVHealthConditionChecker probes controller-side volume health and reconciles it onto
 // pvc.status.healthStatus.
@@ -48,6 +53,10 @@ type PVHealthConditionChecker struct {
 	csiPVHandler CSIHandler
 
 	metrics *metrics.Metrics
+
+	// eventRecorder is only used for unknown-type conditions, which cannot
+	// be represented in pvc.status.healthStatus.
+	eventRecorder record.EventRecorder
 
 	// volumeStateMu guards volumes, which is mutated from the Get-mode workers
 	// and the List-mode goroutine.
@@ -86,16 +95,18 @@ func NewPVHealthConditionChecker(
 	pvcLister corelisters.PersistentVolumeClaimLister,
 	pvLister corelisters.PersistentVolumeLister,
 	healthMetrics *metrics.Metrics,
+	eventRecorder record.EventRecorder,
 ) *PVHealthConditionChecker {
 	return &PVHealthConditionChecker{
-		driverName:   name,
-		k8sClient:    kClient,
-		pvcLister:    pvcLister,
-		pvLister:     pvLister,
-		timeout:      timeout,
-		csiPVHandler: NewCSIPVHandler(conn, timeout),
-		metrics:      healthMetrics,
-		volumes:      map[string]volumeState{},
+		driverName:    name,
+		k8sClient:     kClient,
+		pvcLister:     pvcLister,
+		pvLister:      pvLister,
+		timeout:       timeout,
+		csiPVHandler:  NewCSIPVHandler(conn, timeout),
+		metrics:       healthMetrics,
+		eventRecorder: eventRecorder,
+		volumes:       map[string]volumeState{},
 	}
 }
 
@@ -143,7 +154,7 @@ func (checker *PVHealthConditionChecker) CheckControllerListVolumeHealth(ctx con
 
 		health, present := result[volumeHandle]
 		if present {
-			if err := checker.reconcileAndTrack(ctx, pvc, health.Conditions); err != nil {
+			if err := checker.reconcileAndTrack(ctx, pvc, health); err != nil {
 				logger.Error(err, "Reconcile PVC health status error", "pvc", pvc.Name)
 			}
 			continue
@@ -171,7 +182,7 @@ func (checker *PVHealthConditionChecker) handleAbsentInListCycle(ctx context.Con
 		// Failed RPC is not a recovery; wait for the next list cycle.
 		return err
 	}
-	return checker.reconcileAndTrack(ctx, pvc, health.Conditions)
+	return checker.reconcileAndTrack(ctx, pvc, health)
 }
 
 func (checker *PVHealthConditionChecker) GetVolumeHandle(pv *v1.PersistentVolume) (string, error) {
@@ -221,14 +232,16 @@ func (checker *PVHealthConditionChecker) CheckControllerVolumeHealth(ctx context
 		return err
 	}
 
-	return checker.reconcileAndTrack(ctx, pvc, health.Conditions)
+	return checker.reconcileAndTrack(ctx, pvc, health)
 }
 
 // The driver's report is authoritative (overwrite, not merge), and a patch is issued only
 // when it differs from PVC status or a same-resourceVersion patch not yet seen by the informer.
-func (checker *PVHealthConditionChecker) reconcileAndTrack(ctx context.Context, pvc *v1.PersistentVolumeClaim, conditions []v1.VolumeHealthCondition) error {
+func (checker *PVHealthConditionChecker) reconcileAndTrack(ctx context.Context, pvc *v1.PersistentVolumeClaim, health *VolumeHealthResult) error {
+	checker.surfaceUnknownConditions(ctx, pvc, health.Unknown)
+
 	pvcKey := pvc.Namespace + "/" + pvc.Name
-	desired := normalizeConditions(conditions)
+	desired := normalizeConditions(health.Conditions)
 	prev := checker.currentHealthConditions(pvcKey, pvc)
 
 	if !conditionsEqual(prev, desired) {
@@ -323,6 +336,43 @@ func (checker *PVHealthConditionChecker) recordDroppedStatusWrite() {
 		return
 	}
 	checker.metrics.RecordDroppedStatusWrite()
+}
+
+// The CSI spec forbids acting on unrecognized error types, and the status enum
+// cannot represent them, so they are surfaced as a PVC warning event instead.
+func (checker *PVHealthConditionChecker) surfaceUnknownConditions(ctx context.Context, pvc *v1.PersistentVolumeClaim, unknown []UnknownCondition) {
+	if len(unknown) == 0 {
+		return
+	}
+	details := unknownConditionsDetails(unknown)
+	klog.FromContext(ctx).Info("CSI driver reported volume health conditions of a type unknown to this monitor", "pvc", klog.KObj(pvc), "conditions", details)
+	if checker.metrics != nil {
+		for _, u := range unknown {
+			checker.metrics.RecordUnknownCondition(u.Status)
+		}
+	}
+	if checker.eventRecorder == nil {
+		return
+	}
+	checker.eventRecorder.Event(pvc, v1.EventTypeWarning, eventReasonUnknownHealthCondition,
+		"The CSI driver reported volume health conditions of a type unknown to this monitor: "+details)
+}
+
+// Deterministic (sorted) so the event correlator can aggregate repeats.
+func unknownConditionsDetails(unknown []UnknownCondition) string {
+	entries := make([]string, 0, len(unknown))
+	for _, u := range unknown {
+		e := u.Status
+		if u.Reason != "" {
+			e += " (reason: " + u.Reason + ")"
+		}
+		if u.Message != "" {
+			e += ": " + u.Message
+		}
+		entries = append(entries, e)
+	}
+	sort.Strings(entries)
+	return strings.Join(entries, "; ")
 }
 
 // One gauge series per (status, reason) while unhealthy; all removed on recovery. Safe when

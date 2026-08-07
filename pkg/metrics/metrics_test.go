@@ -152,3 +152,21 @@ csi_volume_health_status_writes_dropped_total 2
 		t.Errorf("dropped writes counter mismatch: %v", err)
 	}
 }
+
+func TestRecordUnknownCondition(t *testing.T) {
+	m, reg := newRegistered(t)
+
+	m.RecordUnknownCondition("MULTIPATH_LOSS")
+	m.RecordUnknownCondition("MULTIPATH_LOSS")
+	m.RecordUnknownCondition("99")
+
+	expected := `
+# HELP csi_volume_health_unknown_condition_total [ALPHA] Cumulative count of volume health entries observed with a CSI error type unknown to this monitor, broken down by the raw CSI status value.
+# TYPE csi_volume_health_unknown_condition_total counter
+csi_volume_health_unknown_condition_total{status="99"} 1
+csi_volume_health_unknown_condition_total{status="MULTIPATH_LOSS"} 2
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected), UnknownConditionTotalName); err != nil {
+		t.Errorf("unknown condition counter mismatch: %v", err)
+	}
+}

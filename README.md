@@ -15,6 +15,8 @@ The sidecar exits at startup if the driver advertises neither capability, or adv
 
 Health conditions reported by the driver are written to `pvc.status.healthStatus.healthConditions` as `(status, reason, message)` entries, where `status` is one of `Inaccessible`, `DataLoss`, or `Degraded`. The driver's report is authoritative. Conditions the driver no longer reports are removed, an explicitly healthy report clears the field, and nothing is written when nothing has changed.
 
+Health conditions of a type this sidecar does not recognize are never written to `pvc.status.healthStatus`, as the CSI spec requires. They are surfaced instead as a `Warning` event with reason `UnknownVolumeHealthCondition` on the PVC and counted in the `csi_volume_health_unknown_condition_total` metric.
+
 The `CSIVolumeHealth` feature gate must be enabled on kube-apiserver for `pvc.status.healthStatus` to be persisted. The sidecar itself has no feature gate. Deploying it is how a cluster opts in on the controller side. When the gate is disabled, the API server silently drops the field. The sidecar detects this, logs it, counts it in the `csi_volume_health_status_writes_dropped_total` metric, and keeps retrying so reporting resumes as soon as the gate is enabled.
 
 ## Compatibility
@@ -110,6 +112,7 @@ The sidecar exposes the following metrics when `--http-endpoint` is set:
 - `csi_volume_health_probe_duration_seconds`: health probe RPC latency, broken down by CSI method.
 - `csi_controller_volume_health_status`: one series per `(status, reason)` condition currently reported on an unhealthy volume's PVC, with value 1.
 - `csi_volume_health_status_writes_dropped_total`: cumulative count of status writes dropped by the API server, which indicates the `CSIVolumeHealth` feature gate is disabled.
+- `csi_volume_health_unknown_condition_total`: cumulative count of health entries observed with a CSI error type unknown to this sidecar, broken down by the raw CSI status value.
 
 ## Community, discussion, contribution, and support
 

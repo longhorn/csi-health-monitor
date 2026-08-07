@@ -9,6 +9,7 @@ import (
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2/ktesting"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
@@ -94,7 +95,7 @@ func newGetModeFixture(t *testing.T, pv *v1.PersistentVolume, pvc *v1.Persistent
 		VolumeListAndAddInterval: 5 * time.Minute,
 		SupportListVolumeHealth:  false,
 	}
-	ctrl := NewPVMonitorController(client, csiConn, factory, metrics.New(), option)
+	ctrl := NewPVMonitorController(client, csiConn, factory, metrics.New(), record.NewFakeRecorder(100), option)
 
 	if err := pvStore.Add(pv); err != nil {
 		t.Fatal(err)

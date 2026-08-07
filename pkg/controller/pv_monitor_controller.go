@@ -31,6 +31,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
 
@@ -84,6 +85,7 @@ func NewPVMonitorController(
 	conn *grpc.ClientConn,
 	factory informers.SharedInformerFactory,
 	healthMetrics *metrics.Metrics,
+	eventRecorder record.EventRecorder,
 	option *PVMonitorOptions,
 ) *PVMonitorController {
 	ctrl := &PVMonitorController{
@@ -99,7 +101,7 @@ func NewPVMonitorController(
 	}
 	ctrl.setupPVInformer(factory)
 	ctrl.setupPVCInformer(factory)
-	ctrl.setupPVChecker(factory, client, conn, healthMetrics, option)
+	ctrl.setupPVChecker(client, conn, healthMetrics, eventRecorder, option)
 	return ctrl
 }
 
@@ -129,10 +131,10 @@ func (ctrl *PVMonitorController) setupPVCInformer(factory informers.SharedInform
 }
 
 func (ctrl *PVMonitorController) setupPVChecker(
-	factory informers.SharedInformerFactory,
 	client kubernetes.Interface,
 	conn *grpc.ClientConn,
 	healthMetrics *metrics.Metrics,
+	eventRecorder record.EventRecorder,
 	option *PVMonitorOptions,
 ) {
 	ctrl.pvChecker = handler.NewPVHealthConditionChecker(
@@ -143,6 +145,7 @@ func (ctrl *PVMonitorController) setupPVChecker(
 		ctrl.pvcLister,
 		ctrl.pvLister,
 		healthMetrics,
+		eventRecorder,
 	)
 }
 

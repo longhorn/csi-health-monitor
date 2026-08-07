@@ -25,10 +25,14 @@ import (
 	"sync"
 	"time"
 
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apiserver/pkg/server"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
+	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/component-base/featuregate"
 	"k8s.io/component-base/logs"
 	logsapi "k8s.io/component-base/logs/api/v1"
@@ -196,11 +200,16 @@ func main() {
 		VolumeListAndAddInterval: *volumeListAndAddInterval,
 	}
 
+	broadcaster := record.NewBroadcaster(record.WithContext(ctx))
+	broadcaster.StartRecordingToSink(&corev1client.EventSinkImpl{Interface: clientset.CoreV1().Events(v1.NamespaceAll)})
+	eventRecorder := broadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: fmt.Sprintf("csi-external-health-monitor-controller-%s", storageDriver)}).WithLogger(logger)
+
 	monitorController := monitorcontroller.NewPVMonitorController(
 		clientset,
 		csiConn,
 		factory,
 		healthMetrics,
+		eventRecorder,
 		&option,
 	)
 

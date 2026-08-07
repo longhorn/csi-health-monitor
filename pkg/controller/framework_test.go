@@ -11,6 +11,7 @@ import (
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2/ktesting"
 	_ "k8s.io/klog/v2/ktesting/init"
 
@@ -82,7 +83,7 @@ func runTest(t *testing.T, tc *testCase) {
 
 	_, ctx := ktesting.NewTestContext(t)
 	programFakeControllerServer(drv.Controller, tc.supportListVolumeHealth, volumes)
-	pvMonitorController := NewPVMonitorController(client, csiConn, informers, metrics.New(), option)
+	pvMonitorController := NewPVMonitorController(client, csiConn, informers, metrics.New(), record.NewFakeRecorder(100), option)
 	assert.NotNil(pvMonitorController)
 
 	ctx, cancel := context.WithCancel(ctx)

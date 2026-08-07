@@ -1,7 +1,6 @@
 package csi_handler
 
 import (
-	"context"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +10,7 @@ import (
 	informerV1 "k8s.io/client-go/informers/core/v1"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
+	"k8s.io/client-go/tools/record"
 	k8smetrics "k8s.io/component-base/metrics"
 	"k8s.io/klog/v2/ktesting"
 	_ "k8s.io/klog/v2/ktesting/init"
@@ -29,27 +29,43 @@ type MockPVHealthConditionChecker struct {
 	pvInformer               informerV1.PersistentVolumeInformer
 	fakeClient               *fake.Clientset
 	csiControllerServer      *mock.FakeControllerServer
+	eventRecorder            *record.FakeRecorder
 }
 
 func createMockPVHealthConditionChecker(t *testing.T) *MockPVHealthConditionChecker {
 	k8sClient, informer := mock.FakeK8s()
 	drv, csiConn := mock.StartFakeDriver(t)
+	recorder := record.NewFakeRecorder(100)
 
 	handler := NewCSIPVHandler(csiConn, 15*time.Second)
 	return &MockPVHealthConditionChecker{
 		pvHealthConditionChecker: &PVHealthConditionChecker{
-			driverName:   mock.DriverName,
-			timeout:      15 * time.Second,
-			k8sClient:    k8sClient,
-			pvcLister:    informer.Core().V1().PersistentVolumeClaims().Lister(),
-			pvLister:     informer.Core().V1().PersistentVolumes().Lister(),
-			csiPVHandler: handler,
-			volumes:      map[string]volumeState{},
+			driverName:    mock.DriverName,
+			timeout:       15 * time.Second,
+			k8sClient:     k8sClient,
+			pvcLister:     informer.Core().V1().PersistentVolumeClaims().Lister(),
+			pvLister:      informer.Core().V1().PersistentVolumes().Lister(),
+			csiPVHandler:  handler,
+			eventRecorder: recorder,
+			volumes:       map[string]volumeState{},
 		},
 		pvcInformer:         informer.Core().V1().PersistentVolumeClaims(),
 		pvInformer:          informer.Core().V1().PersistentVolumes(),
 		fakeClient:          k8sClient.(*fake.Clientset),
 		csiControllerServer: drv.Controller,
+		eventRecorder:       recorder,
+	}
+}
+
+func drainEvents(rec *record.FakeRecorder) []string {
+	var events []string
+	for {
+		select {
+		case e := <-rec.Events:
+			events = append(events, e)
+		default:
+			return events
+		}
 	}
 }
 
@@ -86,7 +102,7 @@ func healthStatusPatched(actions []k8stesting.Action) (patched bool, abnormal bo
 }
 
 func setPVCHealthStatus(pvc *v1.PersistentVolumeClaim, health *csi.VolumeHealth) {
-	pvc.Status.HealthStatus = buildHealthStatus(volumeHealthToResult(context.Background(), health).Conditions)
+	pvc.Status.HealthStatus = buildHealthStatus(volumeHealthToResult(health).Conditions)
 }
 
 // trackedUnhealthy reports whether the checker currently remembers the PVC's
@@ -561,4 +577,114 @@ func gaugeSeriesCount(t *testing.T, reg k8smetrics.KubeRegistry) int {
 		}
 	}
 	return 0
+}
+
+func Test_UnknownConditionsSurfacedAsEventNotStatus(t *testing.T) {
+	assert := assert.New(t)
+	checker := createMockPVHealthConditionChecker(t)
+
+	m := healthmetrics.New()
+	reg := k8smetrics.NewKubeRegistry()
+	m.Register(reg)
+	checker.pvHealthConditionChecker.metrics = m
+
+	pv := mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "1", "uid", &mock.BlockVolumeMode, v1.VolumeBound)
+	pvc := mock.CreatePVC(1, 2, "pvc", "uid", mock.DefaultNS, "pv", v1.ClaimBound)
+	assert.Nil(checker.pvInformer.Informer().GetStore().Add(pv))
+	checker.seedPVC(t, pvc)
+
+	_, ctx := ktesting.NewTestContext(t)
+
+	// Cycle 1: one recognized and one unrecognized entry.
+	mixed := &csi.ControllerGetVolumeHealthResponse{
+		VolumeHealth: &csi.VolumeHealth{
+			VolumeId: "1",
+			HealthStatuses: []*csi.VolumeHealth_VolumeHealthEntry{
+				{Status: csi.VolumeHealthErrorType_DEGRADED, Reason: "SlowIO", Message: "slow"},
+				{Status: csi.VolumeHealthErrorType(99), Reason: "FromTheFuture", Message: "flux capacitor"},
+			},
+		},
+	}
+	checker.csiControllerServer.SetGetVolumeHealth("1", mixed, nil)
+	assert.Nil(checker.pvHealthConditionChecker.CheckControllerVolumeHealth(ctx, pv))
+
+	// The status patch carries only the recognized condition.
+	patched, abnormal := healthStatusPatched(checker.fakeClient.Actions())
+	assert.True(patched, "recognized condition must still be patched")
+	assert.True(abnormal)
+	for _, action := range checker.fakeClient.Actions() {
+		if patchAction, ok := action.(k8stesting.PatchAction); ok {
+			assert.NotContains(string(patchAction.GetPatch()), "FromTheFuture", "unknown entries must never reach the status field")
+		}
+	}
+
+	events := drainEvents(checker.eventRecorder)
+	if assert.Len(events, 1, "one warning event per cycle with unknown entries") {
+		assert.Contains(events[0], v1.EventTypeWarning)
+		assert.Contains(events[0], "UnknownVolumeHealthCondition")
+		assert.Contains(events[0], "99 (reason: FromTheFuture): flux capacitor")
+	}
+
+	// Cycle 2: only the unknown entry remains. The recognized condition
+	// clears (unknown entries never block recovery), the event repeats.
+	checker.fakeClient.ClearActions()
+	unknownOnly := &csi.ControllerGetVolumeHealthResponse{
+		VolumeHealth: &csi.VolumeHealth{
+			VolumeId: "1",
+			HealthStatuses: []*csi.VolumeHealth_VolumeHealthEntry{
+				{Status: csi.VolumeHealthErrorType(99), Reason: "FromTheFuture", Message: "flux capacitor"},
+			},
+		},
+	}
+	checker.csiControllerServer.SetGetVolumeHealth("1", unknownOnly, nil)
+	assert.Nil(checker.pvHealthConditionChecker.CheckControllerVolumeHealth(ctx, pv))
+
+	patched, abnormal = healthStatusPatched(checker.fakeClient.Actions())
+	assert.True(patched, "recognized condition must clear when only unknown entries remain")
+	assert.False(abnormal, "the clearing patch must not carry conditions")
+	assert.False(trackedUnhealthy(checker.pvHealthConditionChecker, mock.DefaultNS, "pvc"))
+	assert.Len(drainEvents(checker.eventRecorder), 1, "the event repeats while the driver keeps reporting the entry")
+
+	// Both observations were counted.
+	if got := mustCounterValue(t, reg, healthmetrics.UnknownConditionTotalName, "99"); got != 2 {
+		t.Errorf("unknown condition counter = %v, want 2", got)
+	}
+}
+
+func mustCounterValue(t *testing.T, reg k8smetrics.KubeRegistry, name, status string) float64 {
+	t.Helper()
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() != name {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			for _, l := range m.GetLabel() {
+				if l.GetName() == "status" && l.GetValue() == status {
+					return m.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+	return 0
+}
+
+func Test_NoEventsWithoutUnknownConditions(t *testing.T) {
+	assert := assert.New(t)
+	checker := createMockPVHealthConditionChecker(t)
+
+	pv := mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "1", "uid", &mock.BlockVolumeMode, v1.VolumeBound)
+	pvc := mock.CreatePVC(1, 2, "pvc", "uid", mock.DefaultNS, "pv", v1.ClaimBound)
+	assert.Nil(checker.pvInformer.Informer().GetStore().Add(pv))
+	checker.seedPVC(t, pvc)
+
+	_, ctx := ktesting.NewTestContext(t)
+	abnormal := &csi.ControllerGetVolumeHealthResponse{VolumeHealth: mock.AbnormalVolumeHealth("1")}
+	checker.csiControllerServer.SetGetVolumeHealth("1", abnormal, nil)
+	assert.Nil(checker.pvHealthConditionChecker.CheckControllerVolumeHealth(ctx, pv))
+
+	assert.Empty(drainEvents(checker.eventRecorder), "recognized conditions are reported via status, not events")
 }

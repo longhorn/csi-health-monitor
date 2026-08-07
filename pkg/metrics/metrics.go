@@ -9,6 +9,7 @@ const (
 	ProbeTotalName                   = "csi_volume_health_probe_total"
 	ControllerVolumeHealthStatusName = "csi_controller_volume_health_status"
 	StatusWritesDroppedName          = "csi_volume_health_status_writes_dropped_total"
+	UnknownConditionTotalName        = "csi_volume_health_unknown_condition_total"
 )
 
 const (
@@ -31,10 +32,11 @@ const (
 )
 
 type Metrics struct {
-	probeDuration       *k8smetrics.HistogramVec
-	probeTotal          *k8smetrics.CounterVec
-	volumeHealthVec     *k8smetrics.GaugeVec
-	statusWritesDropped *k8smetrics.Counter
+	probeDuration         *k8smetrics.HistogramVec
+	probeTotal            *k8smetrics.CounterVec
+	volumeHealthVec       *k8smetrics.GaugeVec
+	statusWritesDropped   *k8smetrics.Counter
+	unknownConditionTotal *k8smetrics.CounterVec
 }
 
 func New() *Metrics {
@@ -71,6 +73,14 @@ func New() *Metrics {
 				StabilityLevel: k8smetrics.ALPHA,
 			},
 		),
+		unknownConditionTotal: k8smetrics.NewCounterVec(
+			&k8smetrics.CounterOpts{
+				Name:           UnknownConditionTotalName,
+				Help:           "Cumulative count of volume health entries observed with a CSI error type unknown to this monitor, broken down by the raw CSI status value.",
+				StabilityLevel: k8smetrics.ALPHA,
+			},
+			[]string{labelStatus},
+		),
 	}
 }
 
@@ -79,10 +89,16 @@ func (m *Metrics) Register(registry k8smetrics.KubeRegistry) {
 	registry.MustRegister(m.probeTotal)
 	registry.MustRegister(m.volumeHealthVec)
 	registry.MustRegister(m.statusWritesDropped)
+	registry.MustRegister(m.unknownConditionTotal)
 }
 
 func (m *Metrics) RecordDroppedStatusWrite() {
 	m.statusWritesDropped.Inc()
+}
+
+// Cardinality is bounded by the CSI enum values drivers report.
+func (m *Metrics) RecordUnknownCondition(csiStatus string) {
+	m.unknownConditionTotal.WithLabelValues(csiStatus).Inc()
 }
 
 func (m *Metrics) ObserveProbe(method string, durationSeconds float64, err error) {

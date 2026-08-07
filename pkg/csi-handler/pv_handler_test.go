@@ -181,31 +181,38 @@ func Test_mapVolumeHealthErrorType(t *testing.T) {
 	}
 }
 
-// Per the CSI spec, entries with unrecognized error types are skipped while
-// the recognized ones are still acted on, and this matches the kubelet.
-func Test_volumeHealthToResultIgnoresUnknownEntries(t *testing.T) {
+func Test_volumeHealthToResultSeparatesUnknownEntries(t *testing.T) {
 	mixed := &csi.VolumeHealth{
 		VolumeId: "1",
 		HealthStatuses: []*csi.VolumeHealth_VolumeHealthEntry{
 			{Status: csi.VolumeHealthErrorType_DEGRADED, Reason: "SlowIO"},
-			{Status: csi.VolumeHealthErrorType(99), Reason: "FromTheFuture"},
+			{Status: csi.VolumeHealthErrorType(99), Reason: "FromTheFuture", Message: "flux capacitor"},
 		},
 	}
-	got := volumeHealthToResult(context.Background(), mixed)
+	got := volumeHealthToResult(mixed)
 	want := []v1.VolumeHealthCondition{{Status: v1.VolumeHealthDegraded, Reason: "SlowIO"}}
 	if !reflect.DeepEqual(got.Conditions, want) {
 		t.Errorf("mixed entries = %v, want %v", got.Conditions, want)
+	}
+	// Enum values without a name in this build surface as the decimal number.
+	wantUnknown := []UnknownCondition{{Status: "99", Reason: "FromTheFuture", Message: "flux capacitor"}}
+	if !reflect.DeepEqual(got.Unknown, wantUnknown) {
+		t.Errorf("mixed unknown entries = %v, want %v", got.Unknown, wantUnknown)
 	}
 
 	unknownOnly := &csi.VolumeHealth{
 		VolumeId: "1",
 		HealthStatuses: []*csi.VolumeHealth_VolumeHealthEntry{
-			{Status: csi.VolumeHealthErrorType(99), Reason: "FromTheFuture"},
+			{Status: csi.VolumeHealthErrorType_UNKNOWN_VOLUME_HEALTH_TYPE, Reason: "FromTheFuture"},
 		},
 	}
-	got = volumeHealthToResult(context.Background(), unknownOnly)
+	got = volumeHealthToResult(unknownOnly)
 	if len(got.Conditions) != 0 {
 		t.Errorf("unknown-only entries = %v, want none", got.Conditions)
+	}
+	wantUnknown = []UnknownCondition{{Status: "UNKNOWN_VOLUME_HEALTH_TYPE", Reason: "FromTheFuture"}}
+	if !reflect.DeepEqual(got.Unknown, wantUnknown) {
+		t.Errorf("unknown-only unknown entries = %v, want %v", got.Unknown, wantUnknown)
 	}
 }
 

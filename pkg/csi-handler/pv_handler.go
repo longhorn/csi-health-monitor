@@ -22,7 +22,6 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/klog/v2"
 
 	"google.golang.org/grpc"
 
@@ -46,6 +45,15 @@ func NewCSIPVHandler(conn *grpc.ClientConn, timeout time.Duration) CSIHandler {
 
 type VolumeHealthResult struct {
 	Conditions []v1.VolumeHealthCondition
+	Unknown    []UnknownCondition
+}
+
+// UnknownCondition is kept as raw strings because it deliberately never
+// becomes a v1.VolumeHealthCondition.
+type UnknownCondition struct {
+	Status  string
+	Reason  string
+	Message string
 }
 
 // A volume absent from the returned map was not reported in this list cycle (distinct from
@@ -61,7 +69,7 @@ func (handler *csiPVHandler) ControllerListVolumeHealth(ctx context.Context) (ma
 		}
 
 		for _, vh := range rsp.GetEntries() {
-			p[vh.GetVolumeId()] = volumeHealthToResult(ctx, vh)
+			p[vh.GetVolumeId()] = volumeHealthToResult(vh)
 		}
 
 		token = rsp.GetNextToken()
@@ -95,10 +103,10 @@ func (handler *csiPVHandler) ControllerGetVolumeHealth(ctx context.Context, volu
 		return nil, err
 	}
 
-	return volumeHealthToResult(ctx, res.GetVolumeHealth()), nil
+	return volumeHealthToResult(res.GetVolumeHealth()), nil
 }
 
-func volumeHealthToResult(ctx context.Context, vh *csi.VolumeHealth) *VolumeHealthResult {
+func volumeHealthToResult(vh *csi.VolumeHealth) *VolumeHealthResult {
 	result := &VolumeHealthResult{}
 	if vh == nil {
 		return result
@@ -109,10 +117,11 @@ func volumeHealthToResult(ctx context.Context, vh *csi.VolumeHealth) *VolumeHeal
 		}
 		status, ok := mapVolumeHealthErrorType(entry.GetStatus())
 		if !ok {
-			// The CSI spec requires COs to ignore health error types they do
-			// not know about, acting only on the recognized entries. The
-			// kubelet does the same on the node side.
-			klog.FromContext(ctx).V(4).Info("Ignoring unknown volume health error type", "volume", vh.GetVolumeId(), "status", entry.GetStatus(), "reason", entry.GetReason())
+			result.Unknown = append(result.Unknown, UnknownCondition{
+				Status:  entry.GetStatus().String(),
+				Reason:  entry.GetReason(),
+				Message: entry.GetMessage(),
+			})
 			continue
 		}
 		result.Conditions = append(result.Conditions, v1.VolumeHealthCondition{
