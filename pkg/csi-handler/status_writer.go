@@ -10,6 +10,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 )
 
@@ -40,26 +41,65 @@ func (checker *PVHealthConditionChecker) patchPVCHealthStatus(
 		healthValue = status
 	}
 
-	patch := map[string]interface{}{
-		"status": map[string]interface{}{
-			"healthStatus": healthValue,
-		},
-	}
-	data, err := json.Marshal(patch)
-	if err != nil {
-		return false, fmt.Errorf("failed to marshal health status patch for PVC %s/%s: %w", pvc.Namespace, pvc.Name, err)
-	}
-
 	ctx, cancel := context.WithTimeout(ctx, checker.timeout)
 	defer cancel()
-	updated, err := checker.k8sClient.CoreV1().PersistentVolumeClaims(pvc.Namespace).Patch(
-		ctx,
-		pvc.Name,
-		types.MergePatchType,
-		data,
-		metav1.PatchOptions{FieldManager: fieldManager},
-		"status",
-	)
+
+	var desired []v1.VolumeHealthCondition
+	if status != nil {
+		desired = normalizeConditions(status.HealthConditions)
+	}
+
+	pvcs := checker.k8sClient.CoreV1().PersistentVolumeClaims(pvc.Namespace)
+	var updated *v1.PersistentVolumeClaim
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		current, err := pvcs.Get(ctx, pvc.Name, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		if pvc.UID != "" && current.UID != pvc.UID {
+			return fmt.Errorf("PVC %s/%s changed UID from %s to %s while updating health status", pvc.Namespace, pvc.Name, pvc.UID, current.UID)
+		}
+		if current.Spec.VolumeName != pvc.Spec.VolumeName {
+			return fmt.Errorf("PVC %s/%s changed binding from PV %q to %q while updating health status", pvc.Namespace, pvc.Name, pvc.Spec.VolumeName, current.Spec.VolumeName)
+		}
+
+		if healthValue == nil {
+			if current.Status.HealthStatus == nil {
+				updated = current
+				return nil
+			}
+		} else if conditionsEqual(pvcHealthConditions(current), desired) {
+			updated = current
+			return nil
+		}
+
+		metadata := map[string]interface{}{
+			"resourceVersion": current.ResourceVersion,
+		}
+		if current.UID != "" {
+			metadata["uid"] = current.UID
+		}
+		patch := map[string]interface{}{
+			"metadata": metadata,
+			"status": map[string]interface{}{
+				"healthStatus": healthValue,
+			},
+		}
+		data, err := json.Marshal(patch)
+		if err != nil {
+			return fmt.Errorf("failed to marshal health status patch: %w", err)
+		}
+
+		updated, err = pvcs.Patch(
+			ctx,
+			pvc.Name,
+			types.MergePatchType,
+			data,
+			metav1.PatchOptions{FieldManager: fieldManager},
+			"status",
+		)
+		return err
+	})
 	if err != nil {
 		return false, fmt.Errorf("failed to patch health status for PVC %s/%s: %w", pvc.Namespace, pvc.Name, err)
 	}
