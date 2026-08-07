@@ -28,16 +28,16 @@ import (
 	"github.com/container-storage-interface/spec/lib/go/csi"
 )
 
-var _ CSIHandler = &csiPVHandler{}
+var _ CSIHealthClient = &csiHealthClient{}
 
-type csiPVHandler struct {
+type csiHealthClient struct {
 	controllerClient csi.ControllerClient
 	// timeout bounds each individual CSI RPC, not a whole reconciliation cycle.
 	timeout time.Duration
 }
 
-func NewCSIPVHandler(conn *grpc.ClientConn, timeout time.Duration) CSIHandler {
-	return &csiPVHandler{
+func NewCSIHealthClient(conn *grpc.ClientConn, timeout time.Duration) CSIHealthClient {
+	return &csiHealthClient{
 		controllerClient: csi.NewControllerClient(conn),
 		timeout:          timeout,
 	}
@@ -58,12 +58,12 @@ type UnknownCondition struct {
 
 // A volume absent from the returned map was not reported in this list cycle (distinct from
 // present-but-empty, which means healthy); the caller can resolve absence with ControllerGetVolumeHealth.
-func (handler *csiPVHandler) ControllerListVolumeHealth(ctx context.Context) (map[string]*VolumeHealthResult, error) {
+func (client *csiHealthClient) ControllerListVolumeHealth(ctx context.Context) (map[string]*VolumeHealthResult, error) {
 	p := map[string]*VolumeHealthResult{}
 
 	token := ""
 	for {
-		rsp, err := handler.listVolumeHealthPage(ctx, token)
+		rsp, err := client.listVolumeHealthPage(ctx, token)
 		if err != nil {
 			return nil, fmt.Errorf("failed to list volume health: %v", err)
 		}
@@ -82,20 +82,20 @@ func (handler *csiPVHandler) ControllerListVolumeHealth(ctx context.Context) (ma
 
 // Each page gets its own deadline so a large paginated listing is not
 // squeezed into a single timeout.
-func (handler *csiPVHandler) listVolumeHealthPage(ctx context.Context, token string) (*csi.ControllerListVolumeHealthResponse, error) {
-	ctx, cancel := context.WithTimeout(ctx, handler.timeout)
+func (client *csiHealthClient) listVolumeHealthPage(ctx context.Context, token string) (*csi.ControllerListVolumeHealthResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, client.timeout)
 	defer cancel()
-	return handler.controllerClient.ControllerListVolumeHealth(ctx, &csi.ControllerListVolumeHealthRequest{
+	return client.controllerClient.ControllerListVolumeHealth(ctx, &csi.ControllerListVolumeHealthRequest{
 		StartingToken: token,
 	})
 }
 
 // A non-error response with no health statuses is the explicit recovery signal and yields
 // an empty (healthy) result.
-func (handler *csiPVHandler) ControllerGetVolumeHealth(ctx context.Context, volumeID string) (*VolumeHealthResult, error) {
-	ctx, cancel := context.WithTimeout(ctx, handler.timeout)
+func (client *csiHealthClient) ControllerGetVolumeHealth(ctx context.Context, volumeID string) (*VolumeHealthResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, client.timeout)
 	defer cancel()
-	res, err := handler.controllerClient.ControllerGetVolumeHealth(ctx, &csi.ControllerGetVolumeHealthRequest{
+	res, err := client.controllerClient.ControllerGetVolumeHealth(ctx, &csi.ControllerGetVolumeHealthRequest{
 		VolumeId: volumeID,
 	})
 	if err != nil {

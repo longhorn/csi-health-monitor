@@ -50,7 +50,7 @@ type PVHealthConditionChecker struct {
 	pvcLister corelisters.PersistentVolumeClaimLister
 	pvLister  corelisters.PersistentVolumeLister
 
-	csiPVHandler CSIHandler
+	csiHealthClient CSIHealthClient
 
 	metrics *metrics.Metrics
 
@@ -99,15 +99,15 @@ func NewPVHealthConditionChecker(
 	eventRecorder record.EventRecorder,
 ) *PVHealthConditionChecker {
 	return &PVHealthConditionChecker{
-		driverName:    name,
-		k8sClient:     kClient,
-		pvcLister:     pvcLister,
-		pvLister:      pvLister,
-		timeout:       timeout,
-		csiPVHandler:  NewCSIPVHandler(conn, timeout),
-		metrics:       healthMetrics,
-		eventRecorder: eventRecorder,
-		volumes:       map[string]volumeState{},
+		driverName:      name,
+		k8sClient:       kClient,
+		pvcLister:       pvcLister,
+		pvLister:        pvLister,
+		timeout:         timeout,
+		csiHealthClient: NewCSIHealthClient(conn, timeout),
+		metrics:         healthMetrics,
+		eventRecorder:   eventRecorder,
+		volumes:         map[string]volumeState{},
 	}
 }
 
@@ -117,7 +117,7 @@ func (checker *PVHealthConditionChecker) CheckControllerListVolumeHealth(ctx con
 	// A failed list RPC is not a recovery: leave stored conditions
 	// untouched and try again next cycle.
 	start := time.Now()
-	result, err := checker.csiPVHandler.ControllerListVolumeHealth(ctx)
+	result, err := checker.csiHealthClient.ControllerListVolumeHealth(ctx)
 	checker.observeProbe(metrics.MethodList, start, err)
 	if err != nil {
 		return err
@@ -177,7 +177,7 @@ func (checker *PVHealthConditionChecker) handleAbsentInListCycle(ctx context.Con
 	}
 
 	start := time.Now()
-	health, err := checker.csiPVHandler.ControllerGetVolumeHealth(ctx, volumeHandle)
+	health, err := checker.csiHealthClient.ControllerGetVolumeHealth(ctx, volumeHandle)
 	checker.observeProbe(metrics.MethodGet, start, err)
 	if err != nil {
 		// Failed RPC is not a recovery; wait for the next list cycle.
@@ -221,7 +221,7 @@ func (checker *PVHealthConditionChecker) CheckControllerVolumeHealth(ctx context
 	}
 
 	start := time.Now()
-	health, err := checker.csiPVHandler.ControllerGetVolumeHealth(ctx, volumeHandle)
+	health, err := checker.csiHealthClient.ControllerGetVolumeHealth(ctx, volumeHandle)
 	checker.observeProbe(metrics.MethodGet, start, err)
 	if err != nil {
 		// Failed RPC is not a recovery.

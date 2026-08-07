@@ -62,10 +62,10 @@ type VolumeSample struct {
 	Health *csi.VolumeHealth
 }
 
-func Test_csiPVHandler_ControllerListVolumeHealth(t *testing.T) {
+func Test_csiHealthClient_ControllerListVolumeHealth(t *testing.T) {
 	drv, csiConn := mock.StartFakeDriver(t)
 
-	handler := NewCSIPVHandler(csiConn, 15*time.Second)
+	handler := NewCSIHealthClient(csiConn, 15*time.Second)
 	out := &csi.ControllerListVolumeHealthResponse{
 		Entries: []*csi.VolumeHealth{
 			abnormalVolumeHealth,
@@ -92,11 +92,11 @@ func Test_csiPVHandler_ControllerListVolumeHealth(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := handler.ControllerListVolumeHealth(context.Background())
 			if (err != nil) != tt.wantErr {
-				t.Errorf("csiPVHandler.ControllerListVolumeHealth() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("csiHealthClient.ControllerListVolumeHealth() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("csiPVHandler.ControllerListVolumeHealth() = %v, want %v", got, tt.want)
+				t.Errorf("csiHealthClient.ControllerListVolumeHealth() = %v, want %v", got, tt.want)
 			}
 			reqs := drv.Controller.ListVolumeHealthRequests()
 			if len(reqs) != 1 {
@@ -108,10 +108,10 @@ func Test_csiPVHandler_ControllerListVolumeHealth(t *testing.T) {
 	}
 }
 
-func Test_csiPVHandler_ControllerGetVolumeHealth(t *testing.T) {
+func Test_csiHealthClient_ControllerGetVolumeHealth(t *testing.T) {
 	drv, csiConn := mock.StartFakeDriver(t)
 
-	handler := NewCSIPVHandler(csiConn, 15*time.Second)
+	handler := NewCSIHealthClient(csiConn, 15*time.Second)
 	tests := []struct {
 		name     string
 		want     *VolumeHealthResult
@@ -141,11 +141,11 @@ func Test_csiPVHandler_ControllerGetVolumeHealth(t *testing.T) {
 
 			got, err := handler.ControllerGetVolumeHealth(context.Background(), tt.volumeId)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("csiPVHandler.ControllerGetVolumeHealth() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("csiHealthClient.ControllerGetVolumeHealth() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("csiPVHandler.ControllerGetVolumeHealth() = %v, want %v", got, tt.want)
+				t.Errorf("csiHealthClient.ControllerGetVolumeHealth() = %v, want %v", got, tt.want)
 			}
 			reqs := drv.Controller.GetVolumeHealthRequests()
 			if len(reqs) != reqsBefore+1 {
@@ -218,9 +218,9 @@ func Test_volumeHealthToResultSeparatesUnknownEntries(t *testing.T) {
 
 // Guards against reintroducing a single deadline around a whole listing
 // cycle: every page and every get must get a fresh per-RPC deadline.
-func Test_csiPVHandler_PerRPCDeadlines(t *testing.T) {
+func Test_csiHealthClient_PerRPCDeadlines(t *testing.T) {
 	drv, csiConn := mock.StartFakeDriver(t)
-	handler := NewCSIPVHandler(csiConn, 15*time.Second)
+	handler := NewCSIHealthClient(csiConn, 15*time.Second)
 
 	page1 := &csi.ControllerListVolumeHealthResponse{
 		Entries:   []*csi.VolumeHealth{abnormalVolumeHealth},

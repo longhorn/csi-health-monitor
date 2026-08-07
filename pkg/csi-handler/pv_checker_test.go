@@ -37,17 +37,17 @@ func createMockPVHealthConditionChecker(t *testing.T) *MockPVHealthConditionChec
 	drv, csiConn := mock.StartFakeDriver(t)
 	recorder := record.NewFakeRecorder(100)
 
-	handler := NewCSIPVHandler(csiConn, 15*time.Second)
+	handler := NewCSIHealthClient(csiConn, 15*time.Second)
 	return &MockPVHealthConditionChecker{
 		pvHealthConditionChecker: &PVHealthConditionChecker{
-			driverName:    mock.DriverName,
-			timeout:       15 * time.Second,
-			k8sClient:     k8sClient,
-			pvcLister:     informer.Core().V1().PersistentVolumeClaims().Lister(),
-			pvLister:      informer.Core().V1().PersistentVolumes().Lister(),
-			csiPVHandler:  handler,
-			eventRecorder: recorder,
-			volumes:       map[string]volumeState{},
+			driverName:      mock.DriverName,
+			timeout:         15 * time.Second,
+			k8sClient:       k8sClient,
+			pvcLister:       informer.Core().V1().PersistentVolumeClaims().Lister(),
+			pvLister:        informer.Core().V1().PersistentVolumes().Lister(),
+			csiHealthClient: handler,
+			eventRecorder:   recorder,
+			volumes:         map[string]volumeState{},
 		},
 		pvcInformer:         informer.Core().V1().PersistentVolumeClaims(),
 		pvInformer:          informer.Core().V1().PersistentVolumes(),

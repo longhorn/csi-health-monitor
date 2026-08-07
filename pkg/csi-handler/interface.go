@@ -20,7 +20,7 @@ import (
 	"context"
 )
 
-type CSIHandler interface {
+type CSIHealthClient interface {
 	ControllerListVolumeHealth(ctx context.Context) (map[string]*VolumeHealthResult, error)
 	ControllerGetVolumeHealth(ctx context.Context, volumeID string) (*VolumeHealthResult, error)
 }
