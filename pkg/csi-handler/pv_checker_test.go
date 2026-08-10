@@ -6,6 +6,7 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	informerV1 "k8s.io/client-go/informers/core/v1"
 	"k8s.io/client-go/kubernetes/fake"
@@ -762,4 +763,25 @@ func Test_PVDeletionDoesNotClearRecreatedPVC(t *testing.T) {
 	patched, _ := healthStatusPatched(checker.fakeClient.Actions())
 	assert.False(patched, "a recreated PVC must not be touched")
 	assert.Empty(checker.pvHealthConditionChecker.volumes, "the old claim's state must still be dropped")
+}
+
+// Matches Get mode, which also stops monitoring a PV once it is deleting.
+func Test_ListSkipsDeletingPV(t *testing.T) {
+	assert := assert.New(t)
+	checker := createMockPVHealthConditionChecker(t)
+
+	pv := mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "1", "uid", &mock.BlockVolumeMode, v1.VolumeBound)
+	now := metav1.Now()
+	pv.DeletionTimestamp = &now
+	pvc := mock.CreatePVC(1, 2, "pvc", "uid", mock.DefaultNS, "pv", v1.ClaimBound)
+	assert.Nil(checker.pvInformer.Informer().GetStore().Add(pv))
+	checker.seedPVC(t, pvc)
+
+	_, ctx := ktesting.NewTestContext(t)
+	abnormalOut := &csi.ControllerListVolumeHealthResponse{Entries: []*csi.VolumeHealth{mock.AbnormalVolumeHealth("1")}}
+	checker.csiControllerServer.SetListVolumeHealth(abnormalOut, nil)
+	assert.Nil(checker.pvHealthConditionChecker.CheckControllerListVolumeHealth(ctx))
+
+	patched, _ := healthStatusPatched(checker.fakeClient.Actions())
+	assert.False(patched, "a deleting PV must not be reconciled")
 }

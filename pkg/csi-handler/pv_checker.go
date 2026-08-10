@@ -133,7 +133,7 @@ func (checker *PVHealthConditionChecker) CheckControllerListVolumeHealth(ctx con
 		if pv.Spec.CSI == nil || pv.Spec.CSI.Driver != checker.driverName {
 			continue
 		}
-		if pv.Status.Phase != v1.VolumeBound {
+		if pv.Status.Phase != v1.VolumeBound || pv.DeletionTimestamp != nil {
 			continue
 		}
 		if pv.Spec.ClaimRef == nil {
