@@ -724,3 +724,42 @@ func Test_MismatchedPVCIsNotPatched(t *testing.T) {
 		})
 	}
 }
+
+func Test_PVDeletionClearsStalePVCHealthStatus(t *testing.T) {
+	assert := assert.New(t)
+	checker := createMockPVHealthConditionChecker(t)
+
+	pv := mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "1", "uid", &mock.BlockVolumeMode, v1.VolumeBound)
+	pvc := mock.CreatePVC(1, 2, "pvc", "uid", mock.DefaultNS, "pv", v1.ClaimBound)
+	setPVCHealthStatus(pvc, mock.AbnormalVolumeHealth("1"))
+	assert.Nil(checker.pvInformer.Informer().GetStore().Add(pv))
+	checker.seedPVC(t, pvc)
+
+	_, ctx := ktesting.NewTestContext(t)
+	checker.pvHealthConditionChecker.ClearForDeletedPV(ctx, pv)
+
+	patched, abnormal := healthStatusPatched(checker.fakeClient.Actions())
+	assert.True(patched, "the stale health status must be cleared")
+	assert.False(abnormal, "the clearing patch must not carry conditions")
+	assert.Empty(checker.pvHealthConditionChecker.volumes)
+}
+
+// A PVC recreated under the same name belongs to another volume and must be
+// left alone when the old PV goes away.
+func Test_PVDeletionDoesNotClearRecreatedPVC(t *testing.T) {
+	assert := assert.New(t)
+	checker := createMockPVHealthConditionChecker(t)
+
+	pv := mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "1", "uid-old", &mock.BlockVolumeMode, v1.VolumeBound)
+	pvc := mock.CreatePVC(1, 2, "pvc", "uid-new", mock.DefaultNS, "other-pv", v1.ClaimBound)
+	setPVCHealthStatus(pvc, mock.AbnormalVolumeHealth("2"))
+	assert.Nil(checker.pvInformer.Informer().GetStore().Add(pv))
+	checker.seedPVC(t, pvc)
+
+	_, ctx := ktesting.NewTestContext(t)
+	checker.pvHealthConditionChecker.ClearForDeletedPV(ctx, pv)
+
+	patched, _ := healthStatusPatched(checker.fakeClient.Actions())
+	assert.False(patched, "a recreated PVC must not be touched")
+	assert.Empty(checker.pvHealthConditionChecker.volumes, "the old claim's state must still be dropped")
+}

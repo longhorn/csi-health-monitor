@@ -17,6 +17,8 @@ limitations under the License.
 package pv_monitor_controller
 
 import (
+	"context"
+
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/tools/cache"
 )
@@ -47,9 +49,7 @@ func (ctrl *PVMonitorController) pvDeleted(obj interface{}) {
 	}
 
 	ctrl.forgetPV(pv.Name)
-	if pv.Spec.ClaimRef != nil {
-		ctrl.pvChecker.ForgetPVC(pv.Spec.ClaimRef.Namespace, pv.Spec.ClaimRef.Name)
-	}
+	ctrl.pvChecker.ClearForDeletedPV(context.Background(), pv)
 }
 
 func (ctrl *PVMonitorController) pvcDeleted(obj interface{}) {

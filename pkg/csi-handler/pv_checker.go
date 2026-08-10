@@ -297,6 +297,29 @@ func (checker *PVHealthConditionChecker) reconcileAndTrack(ctx context.Context, 
 	return nil
 }
 
+func (checker *PVHealthConditionChecker) ClearForDeletedPV(ctx context.Context, pv *v1.PersistentVolume) {
+	claimRef := pv.Spec.ClaimRef
+	if claimRef == nil {
+		return
+	}
+	defer checker.ForgetPVC(claimRef.Namespace, claimRef.Name)
+
+	logger := klog.FromContext(ctx)
+	pvc, err := checker.boundPVC(pv)
+	if err != nil {
+		logger.V(4).Info("Not clearing health status for deleted PV", "pv", pv.Name, "err", err)
+		return
+	}
+	if len(checker.currentHealthConditions(claimRef.Namespace+"/"+claimRef.Name, pvc)) == 0 {
+		return
+	}
+	if _, err := checker.patchPVCHealthStatus(ctx, pvc, nil); err != nil {
+		logger.Error(err, "Failed to clear health status of PVC whose PV was deleted", "pvc", klog.KObj(pvc), "pv", pv.Name)
+		return
+	}
+	logger.V(2).Info("Cleared health status of PVC whose PV was deleted", "pvc", klog.KObj(pvc), "pv", pv.Name)
+}
+
 // ForgetPVC drops the state held for a PVC once it or its PV is deleted.
 func (checker *PVHealthConditionChecker) ForgetPVC(namespace, name string) {
 	checker.volumeStateMu.Lock()
