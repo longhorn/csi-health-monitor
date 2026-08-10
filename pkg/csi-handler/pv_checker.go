@@ -260,6 +260,11 @@ func (checker *PVHealthConditionChecker) reconcileAndTrack(ctx context.Context, 
 
 	pvcKey := pvc.Namespace + "/" + pvc.Name
 	desired := normalizeConditions(health.Conditions)
+
+	// The gauge mirrors the driver's report, not the PVC write. It must stay
+	// current even when the API server rejects or drops the field.
+	checker.updateVolumeHealthGauge(pvc.Namespace, pvc.Name, desired)
+
 	prev := checker.currentHealthConditions(pvcKey, pvc)
 
 	if !conditionsEqual(prev, desired) {
@@ -293,7 +298,6 @@ func (checker *PVHealthConditionChecker) reconcileAndTrack(ctx context.Context, 
 	}
 	checker.volumeStateMu.Unlock()
 
-	checker.updateVolumeHealthGauge(pvc.Namespace, pvc.Name, desired)
 	return nil
 }
 

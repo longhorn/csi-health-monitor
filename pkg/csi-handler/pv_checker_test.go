@@ -490,6 +490,11 @@ func Test_DroppedHealthStatusWritesRetryAndRecoverImmediately(t *testing.T) {
 	assert := assert.New(t)
 	checker := createMockPVHealthConditionChecker(t)
 
+	m := healthmetrics.New()
+	reg := k8smetrics.NewKubeRegistry()
+	m.Register(reg)
+	checker.pvHealthConditionChecker.metrics = m
+
 	pv := mock.CreatePV(2, "pvc", "pv", mock.DefaultNS, "1", "uid", &mock.BlockVolumeMode, v1.VolumeBound)
 	pvc := mock.CreatePVC(1, 2, "pvc", "uid", mock.DefaultNS, "pv", v1.ClaimBound)
 	assert.Nil(checker.pvInformer.Informer().GetStore().Add(pv))
@@ -516,6 +521,7 @@ func Test_DroppedHealthStatusWritesRetryAndRecoverImmediately(t *testing.T) {
 	assert.True(patched, "first cycle must attempt the write")
 	assert.False(trackedUnhealthy(checker.pvHealthConditionChecker, mock.DefaultNS, "pvc"), "a dropped write must not be recorded as applied")
 	assert.True(checker.pvHealthConditionChecker.fieldDropped.Load(), "dropped state must be tracked for logging")
+	assert.Equal(1, gaugeSeriesCount(t, reg), "the gauge must reflect the driver's report even while writes are dropped")
 
 	// Cycle 2: still dropped. The write is simply retried at normal cadence.
 	checker.fakeClient.ClearActions()
