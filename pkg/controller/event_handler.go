@@ -17,7 +17,10 @@ limitations under the License.
 package pv_monitor_controller
 
 import (
+	"context"
+
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/tools/cache"
 )
 
 func (ctrl *PVMonitorController) pvAdded(obj interface{}) {
@@ -26,17 +29,43 @@ func (ctrl *PVMonitorController) pvAdded(obj interface{}) {
 		return
 	}
 
-	ctrl.Lock()
-	defer ctrl.Unlock()
-
-	ctrl.pvQueue.Add(pv.Name)
-	ctrl.pvEnqueued[pv.Name] = true
+	ctrl.enqueuePV(pv.Name)
 }
 
-func (ctrl *PVMonitorController) podAdded(obj interface{}) {
-	ctrl.pvcToPodsCache.AddPod(obj.(*v1.Pod))
+func (ctrl *PVMonitorController) pvDeleted(obj interface{}) {
+	pv, ok := obj.(*v1.PersistentVolume)
+	if !ok {
+		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+		if !ok {
+			return
+		}
+		pv, ok = tombstone.Obj.(*v1.PersistentVolume)
+		if !ok {
+			return
+		}
+	}
+	if pv.Spec.CSI == nil || pv.Spec.CSI.Driver != ctrl.driverName {
+		return
+	}
+
+	ctrl.forgetPV(pv.Name)
+	ctrl.pvChecker.ClearForDeletedPV(context.Background(), pv)
 }
 
-func (ctrl *PVMonitorController) podDeleted(obj interface{}) {
-	ctrl.pvcToPodsCache.DeletePod(obj.(*v1.Pod))
+func (ctrl *PVMonitorController) pvcDeleted(obj interface{}) {
+	pvc, ok := obj.(*v1.PersistentVolumeClaim)
+	if !ok {
+		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+		if !ok {
+			return
+		}
+		pvc, ok = tombstone.Obj.(*v1.PersistentVolumeClaim)
+		if !ok {
+			return
+		}
+	}
+
+	// Forgetting state for a PVC the checker never tracked is a no-op, so no
+	// driver filtering is needed here.
+	ctrl.pvChecker.ForgetPVC(pvc.Namespace, pvc.Name)
 }

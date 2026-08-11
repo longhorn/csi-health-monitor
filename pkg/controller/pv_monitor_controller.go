@@ -18,7 +18,6 @@ package pv_monitor_controller
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
@@ -37,22 +36,16 @@ import (
 	"k8s.io/klog/v2"
 
 	handler "github.com/kubernetes-csi/external-health-monitor/pkg/csi-handler"
-	"github.com/kubernetes-csi/external-health-monitor/pkg/util"
+	"github.com/kubernetes-csi/external-health-monitor/pkg/metrics"
 )
 
 // PVMonitorController is the struct of pv monitor controller containing all information to perform volumes health condition checking
 type PVMonitorController struct {
-	client             kubernetes.Interface
-	driverName         string
-	eventRecorder      record.EventRecorder
-	supportListVolumes bool
+	driverName string
+
+	supportListVolumeHealth bool
 
 	pvChecker *handler.PVHealthConditionChecker
-
-	enableNodeWatcher bool
-	nodeWatcher       *NodeWatcher
-
-	csiConn *grpc.ClientConn
 
 	pvLister       corelisters.PersistentVolumeLister
 	pvListerSynced cache.InformerSynced
@@ -60,19 +53,14 @@ type PVMonitorController struct {
 	pvcLister       corelisters.PersistentVolumeClaimLister
 	pvcListerSynced cache.InformerSynced
 
-	podLister       corelisters.PodLister
-	podListerSynced cache.InformerSynced
-
-	// used for updating pvEnqueue map
+	// used for updating the pvEnqueued map
 	sync.Mutex
-	// pvEnqueued stores all CSI PVs which are enqueued
+	// pvEnqueued stores CSI PVs enrolled in the recurring monitoring loop.
 	pvEnqueued map[string]bool
-	// pvcToPodsCache stores PVCs/Pods mapping info
-	pvcToPodsCache *util.PVCToPodsCache
 	// we get PVs from pvQueue to check their health conditions
 	pvQueue workqueue.Interface
 
-	// Time interval for calling ListVolumes RPC to check volumes' health condition
+	// Time interval for calling ControllerListVolumeHealth RPC to check volumes' health condition
 	ListVolumesInterval time.Duration
 	// Time interval for executing pv worker goroutines
 	PVWorkerExecuteInterval time.Duration
@@ -82,39 +70,30 @@ type PVMonitorController struct {
 
 // PVMonitorOptions configures PV monitor
 type PVMonitorOptions struct {
-	ContextTimeout    time.Duration
-	DriverName        string
-	EnableNodeWatcher bool
-	SupportListVolume bool
+	ContextTimeout          time.Duration
+	DriverName              string
+	SupportListVolumeHealth bool
 
 	ListVolumesInterval      time.Duration
 	PVWorkerExecuteInterval  time.Duration
 	VolumeListAndAddInterval time.Duration
-
-	NodeWorkerExecuteInterval time.Duration
-	NodeListAndAddInterval    time.Duration
 }
 
 // NewPVMonitorController creates PV monitor controller
 func NewPVMonitorController(
-	logger klog.Logger,
 	client kubernetes.Interface,
 	conn *grpc.ClientConn,
 	factory informers.SharedInformerFactory,
+	healthMetrics *metrics.Metrics,
 	eventRecorder record.EventRecorder,
 	option *PVMonitorOptions,
 ) *PVMonitorController {
 	ctrl := &PVMonitorController{
-		csiConn:            conn,
-		eventRecorder:      eventRecorder,
-		supportListVolumes: option.SupportListVolume,
-		enableNodeWatcher:  option.EnableNodeWatcher,
-		client:             client,
-		driverName:         option.DriverName,
-		pvQueue:            workqueue.NewNamed("csi-monitor-pv-queue"),
+		supportListVolumeHealth: option.SupportListVolumeHealth,
+		driverName:              option.DriverName,
+		pvQueue:                 workqueue.NewNamed("csi-monitor-pv-queue"),
 
-		pvcToPodsCache: util.NewPVCToPodsCache(),
-		pvEnqueued:     make(map[string]bool),
+		pvEnqueued: make(map[string]bool),
 
 		ListVolumesInterval:      option.ListVolumesInterval,
 		PVWorkerExecuteInterval:  option.PVWorkerExecuteInterval,
@@ -122,48 +101,40 @@ func NewPVMonitorController(
 	}
 	ctrl.setupPVInformer(factory)
 	ctrl.setupPVCInformer(factory)
-	ctrl.setupEventInformer(factory)
-	ctrl.setupPVChecker(factory, client, conn, option)
-	ctrl.setupPodNodeInformersIfNecessary(factory, logger, option)
+	ctrl.setupPVChecker(client, conn, healthMetrics, eventRecorder, option)
 	return ctrl
 }
 
 func (ctrl *PVMonitorController) setupPVInformer(factory informers.SharedInformerFactory) {
 	informer := factory.Core().V1().PersistentVolumes()
-	informer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: ctrl.pvAdded,
-		// we do not care about PV changes, so do not need UpdateFunc here.
-		// deleted PVs will not be readded to the queue, so do not need DeleteFunc here
-	})
+	handlers := cache.ResourceEventHandlerFuncs{
+		// PV phase changes are picked up by the periodic AddPVsToQueue pass,
+		// so no UpdateFunc is needed.
+		DeleteFunc: ctrl.pvDeleted,
+	}
+	if !ctrl.supportListVolumeHealth {
+		// Only Get mode consumes the PV worker queue.
+		handlers.AddFunc = ctrl.pvAdded
+	}
+	informer.Informer().AddEventHandler(handlers)
 	ctrl.pvLister = informer.Lister()
 	ctrl.pvListerSynced = informer.Informer().HasSynced
 }
 
 func (ctrl *PVMonitorController) setupPVCInformer(factory informers.SharedInformerFactory) {
 	informer := factory.Core().V1().PersistentVolumeClaims()
+	informer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+		DeleteFunc: ctrl.pvcDeleted,
+	})
 	ctrl.pvcLister = informer.Lister()
 	ctrl.pvcListerSynced = informer.Informer().HasSynced
 }
 
-func (ctrl *PVMonitorController) setupEventInformer(factory informers.SharedInformerFactory) {
-	informer := factory.Core().V1().Events()
-	informer.Informer().AddIndexers(cache.Indexers{
-		util.DefaultEventIndexerName: func(obj interface{}) ([]string, error) {
-			event := obj.(*v1.Event)
-			if event != nil {
-				key := fmt.Sprintf("%s:%s:%s", string(event.InvolvedObject.UID), event.Type, event.Reason)
-				return []string{key}, nil
-			} else {
-				return nil, nil
-			}
-		},
-	})
-}
-
 func (ctrl *PVMonitorController) setupPVChecker(
-	factory informers.SharedInformerFactory,
 	client kubernetes.Interface,
 	conn *grpc.ClientConn,
+	healthMetrics *metrics.Metrics,
+	eventRecorder record.EventRecorder,
 	option *PVMonitorOptions,
 ) {
 	ctrl.pvChecker = handler.NewPVHealthConditionChecker(
@@ -173,41 +144,8 @@ func (ctrl *PVMonitorController) setupPVChecker(
 		option.ContextTimeout,
 		ctrl.pvcLister,
 		ctrl.pvLister,
-		factory.Core().V1().Events(),
-		ctrl.eventRecorder,
-	)
-}
-
-func (ctrl *PVMonitorController) setupPodNodeInformersIfNecessary(factory informers.SharedInformerFactory, logger klog.Logger, option *PVMonitorOptions) {
-	if ctrl.enableNodeWatcher {
-		ctrl.setupPodInformer(factory)
-		ctrl.setupNodeWatcher(factory, logger, option)
-	}
-}
-
-func (ctrl *PVMonitorController) setupPodInformer(factory informers.SharedInformerFactory) {
-	informer := factory.Core().V1().Pods()
-	informer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: ctrl.podAdded,
-		// UpdateFunc: ctrl.podUpdated,  TODO: do we need this ?
-		DeleteFunc: ctrl.podDeleted,
-	})
-	ctrl.podLister = informer.Lister()
-	ctrl.podListerSynced = informer.Informer().HasSynced
-}
-
-func (ctrl *PVMonitorController) setupNodeWatcher(factory informers.SharedInformerFactory, logger klog.Logger, option *PVMonitorOptions) {
-	ctrl.nodeWatcher = NewNodeWatcher(
-		logger,
-		ctrl.driverName,
-		ctrl.client,
-		ctrl.pvLister,
-		ctrl.pvcLister,
-		factory.Core().V1().Nodes(),
-		ctrl.eventRecorder,
-		ctrl.pvcToPodsCache,
-		option.NodeWorkerExecuteInterval,
-		option.NodeListAndAddInterval,
+		healthMetrics,
+		eventRecorder,
 	)
 }
 
@@ -224,15 +162,10 @@ func (ctrl *PVMonitorController) Run(ctx context.Context, workers int, wg *sync.
 		return
 	}
 
-	if ctrl.enableNodeWatcher {
-		go ctrl.nodeWatcher.Run(ctx)
-	}
-
-	// TODO: we need to cache the PVs info and get the diff so that we can identify the NotFound error
-	// if storage support List Volumes RPC, ListVolumes is preferred for performance reasons
-	if ctrl.supportListVolumes {
+	// if the driver supports ControllerListVolumeHealth, it is preferred for performance reasons
+	if ctrl.supportListVolumeHealth {
 		goTrack(wg, func() {
-			wait.UntilWithContext(ctx, ctrl.checkPVsHealthConditionByListVolumes, ctrl.ListVolumesInterval)
+			wait.UntilWithContext(ctx, ctrl.checkPVsHealthConditionByListVolumeHealth, ctrl.ListVolumesInterval)
 		})
 		<-ctx.Done()
 		return
@@ -265,22 +198,19 @@ func goTrack(wg *sync.WaitGroup, f func()) {
 }
 
 func waitForCacheSyncSucceed(ctx context.Context, ctrl *PVMonitorController) bool {
-	return cache.WaitForCacheSync(ctx.Done(), ctrl.pvListerSynced, ctrl.pvcListerSynced) &&
-		(!ctrl.enableNodeWatcher || cache.WaitForCacheSync(ctx.Done(), ctrl.podListerSynced))
+	return cache.WaitForCacheSync(ctx.Done(), ctrl.pvListerSynced, ctrl.pvcListerSynced)
 }
 
-func (ctrl *PVMonitorController) checkPVsHealthConditionByListVolumes(ctx context.Context) {
+func (ctrl *PVMonitorController) checkPVsHealthConditionByListVolumeHealth(ctx context.Context) {
 	logger := klog.FromContext(ctx)
-	err := ctrl.pvChecker.CheckControllerListVolumeStatuses(ctx)
+	err := ctrl.pvChecker.CheckControllerListVolumeHealth(ctx)
 	if err != nil {
-		logger.Error(err, "Check controller volume status error")
+		logger.Error(err, "Check controller volume health error")
 	}
 }
 
 // AddPVsToQueue adds PVs to queue periodically
 func (ctrl *PVMonitorController) AddPVsToQueue() error {
-	// TODO: add PV filters when listing
-	// for example: only return CSI PVs
 	pvs, err := ctrl.pvLister.List(labels.Everything())
 	if err != nil {
 		return err
@@ -290,15 +220,41 @@ func (ctrl *PVMonitorController) AddPVsToQueue() error {
 		if pv.Spec.CSI == nil || pv.Spec.CSI.Driver != ctrl.driverName {
 			continue
 		}
-		if !ctrl.pvEnqueued[pv.Name] {
-			ctrl.Lock()
-			ctrl.pvEnqueued[pv.Name] = true
-			ctrl.pvQueue.Add(pv.Name)
-			ctrl.Unlock()
+		if pv.Status.Phase != v1.VolumeBound || pv.DeletionTimestamp != nil {
+			continue
 		}
+		ctrl.enqueuePV(pv.Name)
 	}
 
 	return nil
+}
+
+// enqueuePV adds a PV to the worker queue once, until forgetPV releases it.
+func (ctrl *PVMonitorController) enqueuePV(pvName string) {
+	ctrl.Lock()
+	defer ctrl.Unlock()
+	if !ctrl.pvEnqueued[pvName] {
+		ctrl.pvEnqueued[pvName] = true
+		ctrl.pvQueue.Add(pvName)
+	}
+}
+
+// requeuePV adds a PV back to the worker queue only while it remains enrolled.
+func (ctrl *PVMonitorController) requeuePV(pvName string) {
+	ctrl.Lock()
+	defer ctrl.Unlock()
+	if ctrl.pvEnqueued[pvName] {
+		ctrl.pvQueue.Add(pvName)
+	}
+}
+
+// forgetPV takes a PV out of the monitoring loop so that a later
+// AddPVsToQueue pass can pick it up again, e.g. once a pending PV
+// becomes bound.
+func (ctrl *PVMonitorController) forgetPV(pvName string) {
+	ctrl.Lock()
+	delete(ctrl.pvEnqueued, pvName)
+	ctrl.Unlock()
 }
 
 func (ctrl *PVMonitorController) checkPVWorker(ctx context.Context) {
@@ -312,38 +268,35 @@ func (ctrl *PVMonitorController) checkPVWorker(ctx context.Context) {
 	pvName := key.(string)
 	logger.V(4).Info("Started PV processing", "pv", pvName)
 
-	// get PV to process
 	pv, err := ctrl.pvLister.Get(pvName)
 	if err != nil {
 		if apierrs.IsNotFound(err) {
 			// PV was deleted in the meantime, ignore.
-			ctrl.Lock()
-			// delete pv from cache here so that we do not need to handle pv deletion events
-			delete(ctrl.pvEnqueued, pvName)
-			ctrl.Unlock()
+			ctrl.forgetPV(pvName)
 			logger.V(3).Info("PV deleted, ignoring", "pv", pvName)
 			return
 		}
 		logger.Error(err, "Error getting PersistentVolume", "pv", pvName)
-		ctrl.pvQueue.Add(pvName)
+		ctrl.requeuePV(pvName)
 		return
 	}
 
 	if pv.DeletionTimestamp != nil {
 		logger.Info("PV is being deleted now, skip checking health condition", "pv", pv.Name)
+		ctrl.forgetPV(pvName)
 		return
 	}
 
 	if pv.Status.Phase != v1.VolumeBound {
 		logger.Info("PV status is not bound, remove it from the queue", "pv", pv.Name)
+		ctrl.forgetPV(pvName)
 		return
 	}
 
-	err = ctrl.pvChecker.CheckControllerVolumeStatus(ctx, pv)
+	err = ctrl.pvChecker.CheckControllerVolumeHealth(ctx, pv)
 	if err != nil {
-		logger.Error(err, "Check controller volume status error")
+		logger.Error(err, "Check controller volume health error")
 	}
 
-	// re-enqueue anyway
-	ctrl.pvQueue.Add(pvName)
+	ctrl.requeuePV(pvName)
 }
