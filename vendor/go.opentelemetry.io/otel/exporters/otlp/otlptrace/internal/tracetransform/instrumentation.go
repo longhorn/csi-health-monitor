@@ -1,12 +1,11 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-package tracetransform
+package tracetransform // import "go.opentelemetry.io/otel/exporters/otlp/otlptrace/internal/tracetransform"
 
 import (
-	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
-
 	"go.opentelemetry.io/otel/sdk/instrumentation"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 )
 
 func InstrumentationScope(il instrumentation.Scope) *commonpb.InstrumentationScope {

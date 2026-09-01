@@ -16,7 +16,7 @@ metadata:
   namespace: default
 
 ---
-# Health monitor controller must be able to work with PVs and PVCs
+# Health monitor controller must be able to work with PVs, PVCs, Nodes and Pods
 kind: ClusterRole
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:
@@ -29,11 +29,14 @@ rules:
     resources: ["persistentvolumeclaims"]
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
-    resources: ["persistentvolumeclaims/status"]
-    verbs: ["patch"]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["events"]
-    verbs: ["create", "patch"]
+    verbs: ["get", "list", "watch", "create", "patch"]
 
 ---
 kind: ClusterRoleBinding
@@ -51,9 +54,8 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
 
 ---
-# Health monitor controller must be able to work with leases in the current
-# namespace if (and only if) leadership election is enabled. Leader election
-# also emits events about leadership changes.
+# Health monitor controller must be able to work with configmaps or leases in the current namespace
+# if (and only if) leadership election is enabled
 kind: Role
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:
@@ -64,9 +66,6 @@ rules:
 - apiGroups: ["coordination.k8s.io"]
   resources: ["leases"]
   verbs: ["get", "watch", "list", "delete", "update", "create"]
-- apiGroups: [""]
-  resources: ["events"]
-  verbs: ["create", "patch"]
 
 ---
 kind: RoleBinding
