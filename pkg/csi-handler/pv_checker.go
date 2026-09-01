@@ -19,75 +19,39 @@ package csi_handler
 import (
 	"context"
 	"fmt"
-	"sort"
-	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	coreinformers "k8s.io/client-go/informers/core/v1"
 	"k8s.io/client-go/kubernetes"
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 
-	"github.com/kubernetes-csi/external-health-monitor/pkg/metrics"
+	"github.com/kubernetes-csi/external-health-monitor/pkg/util"
 )
 
-const eventReasonUnknownHealthCondition = "UnknownVolumeHealthCondition"
-
-// PVHealthConditionChecker probes controller-side volume health and reconciles it onto
-// pvc.status.healthStatus.
+// PVHealthConditionChecker is for checking pv health condition
 type PVHealthConditionChecker struct {
 	driverName string
 
-	timeout   time.Duration
-	k8sClient kubernetes.Interface
+	csiConn       *grpc.ClientConn
+	timeout       time.Duration
+	k8sClient     kubernetes.Interface
+	eventRecorder record.EventRecorder
 
 	pvcLister corelisters.PersistentVolumeClaimLister
 	pvLister  corelisters.PersistentVolumeLister
 
-	csiHealthClient CSIHealthClient
+	eventInformer coreinformers.EventInformer
 
-	metrics *metrics.Metrics
-
-	// eventRecorder is only used for unknown-type conditions, which cannot
-	// be represented in pvc.status.healthStatus.
-	eventRecorder record.EventRecorder
-
-	// volumeStateMu guards volumes, which is mutated from the Get-mode workers
-	// and the List-mode goroutine.
-	volumeStateMu sync.Mutex
-	// volumes holds reconciliation state per bound PVC (namespace/name). It
-	// suppresses duplicate patches while the informer lags behind our own
-	// write and flags absent volumes that need a recovery check. PVC status
-	// remains the durable source of truth.
-	volumes map[string]volumeState
-
-	// fieldDropped tracks whether the API server is currently dropping
-	// healthStatus writes (CSIVolumeHealth disabled), so the condition is
-	// logged on transitions instead of on every write.
-	fieldDropped atomic.Bool
+	csiPVHandler CSIHandler
 }
 
-// volumeState carries the in-process knowledge about one volume.
-type volumeState struct {
-	// unhealthy is true while the driver's latest report carried conditions.
-	unhealthy bool
-	// pending mirrors the last status write until the informer observes it.
-	pending *pendingWrite
-}
-
-// pendingWrite only applies while the PVC's resourceVersion still equals the
-// resourceVersion it was computed from.
-type pendingWrite struct {
-	resourceVersion string
-	conditions      []v1.VolumeHealthCondition
-}
-
+// NewPVHealthConditionChecker returns an instance of PVHealthConditionChecker
 func NewPVHealthConditionChecker(
 	name string,
 	conn *grpc.ClientConn,
@@ -95,30 +59,28 @@ func NewPVHealthConditionChecker(
 	timeout time.Duration,
 	pvcLister corelisters.PersistentVolumeClaimLister,
 	pvLister corelisters.PersistentVolumeLister,
-	healthMetrics *metrics.Metrics,
-	eventRecorder record.EventRecorder,
+	eventInformer coreinformers.EventInformer,
+	recorder record.EventRecorder,
 ) *PVHealthConditionChecker {
 	return &PVHealthConditionChecker{
-		driverName:      name,
-		k8sClient:       kClient,
-		pvcLister:       pvcLister,
-		pvLister:        pvLister,
-		timeout:         timeout,
-		csiHealthClient: NewCSIHealthClient(conn, timeout),
-		metrics:         healthMetrics,
-		eventRecorder:   eventRecorder,
-		volumes:         map[string]volumeState{},
+		driverName:    name,
+		csiConn:       conn,
+		k8sClient:     kClient,
+		eventRecorder: recorder,
+		pvcLister:     pvcLister,
+		pvLister:      pvLister,
+		timeout:       timeout,
+		eventInformer: eventInformer,
+		csiPVHandler:  NewCSIPVHandler(conn),
 	}
 }
 
-// A previously-unhealthy volume absent from a complete list cycle is resolved with
-// ControllerGetVolumeHealth. The CSI spec requires Get when List is supported.
-func (checker *PVHealthConditionChecker) CheckControllerListVolumeHealth(ctx context.Context) error {
-	// A failed list RPC is not a recovery: leave stored conditions
-	// untouched and try again next cycle.
-	start := time.Now()
-	result, err := checker.csiHealthClient.ControllerListVolumeHealth(ctx)
-	checker.observeProbe(metrics.MethodList, start, err)
+// CheckControllerListVolumeStatuses checks volumes health condition by ListVolumes
+func (checker *PVHealthConditionChecker) CheckControllerListVolumeStatuses(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, checker.timeout)
+	defer cancel()
+
+	result, err := checker.csiPVHandler.ControllerListVolumeConditions(ctx)
 	if err != nil {
 		return err
 	}
@@ -131,13 +93,12 @@ func (checker *PVHealthConditionChecker) CheckControllerListVolumeHealth(ctx con
 	logger := klog.FromContext(ctx)
 	for _, pv := range pvs {
 		if pv.Spec.CSI == nil || pv.Spec.CSI.Driver != checker.driverName {
+			logger.Info("CSI source is nil or the volume is not managed by this checker/monitor")
 			continue
 		}
-		if pv.Status.Phase != v1.VolumeBound || pv.DeletionTimestamp != nil {
-			continue
-		}
-		if pv.Spec.ClaimRef == nil {
-			logger.V(4).Info("Skipping bound PV without claimRef", "pv", pv.Name)
+
+		if pv.Status.Phase != v1.VolumeBound {
+			logger.Info("PV status is not bound", "pv", pv.Name)
 			continue
 		}
 
@@ -147,45 +108,30 @@ func (checker *PVHealthConditionChecker) CheckControllerListVolumeHealth(ctx con
 			continue
 		}
 
-		pvc, err := checker.boundPVC(pv)
+		volumeCondition := result[volumeHandle]
+		if volumeCondition == nil {
+			continue
+		}
+
+		pvc, err := checker.pvcLister.PersistentVolumeClaims(pv.Spec.ClaimRef.Namespace).Get(pv.Spec.ClaimRef.Name)
 		if err != nil {
 			logger.Error(err, "Get PVC error")
 			continue
 		}
 
-		health, present := result[volumeHandle]
-		if present {
-			if err := checker.reconcileAndTrack(ctx, pvc, health); err != nil {
-				logger.Error(err, "Reconcile PVC health status error", "pvc", klog.KObj(pvc))
-			}
-			continue
-		}
-
-		if err := checker.handleAbsentInListCycle(ctx, pvc, volumeHandle); err != nil {
-			logger.Error(err, "Recover PVC health status error", "pvc", klog.KObj(pvc))
+		if volumeCondition.GetAbnormal() {
+			// Since pv status is bound, we believe PV controller, do not check pv.Spec.ClaimRef here.
+			checker.eventRecorder.Event(pvc, v1.EventTypeWarning, "VolumeConditionAbnormal", volumeCondition.GetMessage())
+		} else {
+			// Send recovery event if the abnormal event was sent and unexpired
+			checker.sendRecoveryEventToPVC(logger, pvc)
 		}
 	}
 
 	return nil
 }
 
-// No-op unless the volume is currently believed unhealthy or PVC status already
-// has stored health conditions from a previous controller run.
-func (checker *PVHealthConditionChecker) handleAbsentInListCycle(ctx context.Context, pvc *v1.PersistentVolumeClaim, volumeHandle string) error {
-	if !checker.needsAbsentVolumeConfirmation(pvc) {
-		return nil
-	}
-
-	start := time.Now()
-	health, err := checker.csiHealthClient.ControllerGetVolumeHealth(ctx, volumeHandle)
-	checker.observeProbe(metrics.MethodGet, start, err)
-	if err != nil {
-		// Failed RPC is not a recovery; wait for the next list cycle.
-		return err
-	}
-	return checker.reconcileAndTrack(ctx, pvc, health)
-}
-
+// GetVolumeHandle returns the volume handle of the pv
 func (checker *PVHealthConditionChecker) GetVolumeHandle(pv *v1.PersistentVolume) (string, error) {
 	if pv.Spec.CSI == nil {
 		return "", fmt.Errorf("csi source is nil")
@@ -194,9 +140,8 @@ func (checker *PVHealthConditionChecker) GetVolumeHandle(pv *v1.PersistentVolume
 	return pv.Spec.CSI.VolumeHandle, nil
 }
 
-// In Get mode an empty health report clears the stored conditions immediately; the Get
-// RPC is authoritative.
-func (checker *PVHealthConditionChecker) CheckControllerVolumeHealth(ctx context.Context, pv *v1.PersistentVolume) error {
+// CheckControllerVolumeStatus checks volume status in controller side
+func (checker *PVHealthConditionChecker) CheckControllerVolumeStatus(ctx context.Context, pv *v1.PersistentVolume) error {
 	if pv.Spec.CSI == nil || pv.Spec.CSI.Driver != checker.driverName {
 		return fmt.Errorf("csi source is nil or the volume is not managed by this checker/monitor")
 	}
@@ -205,13 +150,13 @@ func (checker *PVHealthConditionChecker) CheckControllerVolumeHealth(ctx context
 		return fmt.Errorf("PV: %s status is not bound", pv.Name)
 	}
 
-	if pv.Spec.ClaimRef == nil {
-		return fmt.Errorf("PV %s is bound but has no claimRef", pv.Name)
-	}
+	ctx, cancel := context.WithTimeout(ctx, checker.timeout)
+	defer cancel()
 
+	logger := klog.FromContext(ctx)
 	volumeHandle, err := checker.GetVolumeHandle(pv)
 	if err != nil {
-		// The caller logs returned errors.
+		logger.Error(err, "Get volume handle error")
 		return err
 	}
 
@@ -219,226 +164,40 @@ func (checker *PVHealthConditionChecker) CheckControllerVolumeHealth(ctx context
 		return fmt.Errorf("volume handle in csi source is empty")
 	}
 
-	start := time.Now()
-	health, err := checker.csiHealthClient.ControllerGetVolumeHealth(ctx, volumeHandle)
-	checker.observeProbe(metrics.MethodGet, start, err)
-	if err != nil {
-		// Failed RPC is not a recovery.
-		return err
-	}
-
-	pvc, err := checker.boundPVC(pv)
+	volumeCondition, err := checker.csiPVHandler.ControllerGetVolumeCondition(ctx, volumeHandle)
 	if err != nil {
 		return err
 	}
 
-	return checker.reconcileAndTrack(ctx, pvc, health)
-}
-
-// boundPVC resolves a PV's claimRef, rejecting a PVC that no longer belongs
-// to the PV (e.g. deleted and recreated while the PV informer was stale),
-// which would otherwise get another volume's health patched onto it.
-func (checker *PVHealthConditionChecker) boundPVC(pv *v1.PersistentVolume) (*v1.PersistentVolumeClaim, error) {
-	claimRef := pv.Spec.ClaimRef
-	pvc, err := checker.pvcLister.PersistentVolumeClaims(claimRef.Namespace).Get(claimRef.Name)
+	pvc, err := checker.pvcLister.PersistentVolumeClaims(pv.Spec.ClaimRef.Namespace).Get(pv.Spec.ClaimRef.Name)
 	if err != nil {
-		return nil, err
-	}
-	if claimRef.UID != "" && pvc.UID != claimRef.UID {
-		return nil, fmt.Errorf("PVC %s/%s has UID %s, but PV %s claims UID %s", claimRef.Namespace, claimRef.Name, pvc.UID, pv.Name, claimRef.UID)
-	}
-	if pvc.Spec.VolumeName != pv.Name {
-		return nil, fmt.Errorf("PVC %s/%s is bound to PV %q, not PV %q", claimRef.Namespace, claimRef.Name, pvc.Spec.VolumeName, pv.Name)
-	}
-	return pvc, nil
-}
-
-// The driver's report is authoritative (overwrite, not merge), and a patch is issued only
-// when it differs from PVC status or a same-resourceVersion patch not yet seen by the informer.
-func (checker *PVHealthConditionChecker) reconcileAndTrack(ctx context.Context, pvc *v1.PersistentVolumeClaim, health *VolumeHealthResult) error {
-	checker.surfaceUnknownConditions(ctx, pvc, health.Unknown)
-
-	pvcKey := pvc.Namespace + "/" + pvc.Name
-	desired := normalizeConditions(health.Conditions)
-
-	// The gauge mirrors the driver's report, not the PVC write. It must stay
-	// current even when the API server rejects or drops the field.
-	checker.updateVolumeHealthGauge(pvc.Namespace, pvc.Name, desired)
-
-	prev := checker.currentHealthConditions(pvcKey, pvc)
-
-	if !conditionsEqual(prev, desired) {
-		persisted, err := checker.patchPVCHealthStatus(ctx, pvc, buildHealthStatus(desired))
-		if err != nil {
-			// Leave bookkeeping untouched so the next cycle retries the same transition.
-			return err
-		}
-		if !persisted {
-			// The API server dropped the field; treat like a failed write.
-			return nil
-		}
-		logger := klog.FromContext(ctx)
-		if len(desired) > 0 {
-			logger.V(2).Info("Marked volume as unhealthy", "pvc", klog.KObj(pvc), "conditions", desired)
-		} else {
-			logger.V(2).Info("Marked volume as healthy", "pvc", klog.KObj(pvc))
-		}
+		return err
 	}
 
-	checker.volumeStateMu.Lock()
-	state := volumeState{unhealthy: len(desired) > 0}
-	if !conditionsEqual(pvcHealthConditions(pvc), desired) {
-		// The informer has not observed the write yet; remember it until it does.
-		state.pending = &pendingWrite{resourceVersion: pvc.ResourceVersion, conditions: desired}
-	}
-	if state.unhealthy || state.pending != nil {
-		checker.volumes[pvcKey] = state
+	// At the first stage, we just send PVC events
+	if volumeCondition.GetAbnormal() {
+		// Since pv status is bound, we believe PV controller, do not check pv.Spec.ClaimRef here.
+		checker.eventRecorder.Event(pvc, v1.EventTypeWarning, "VolumeConditionAbnormal", volumeCondition.GetMessage())
 	} else {
-		delete(checker.volumes, pvcKey)
+		// Send recovery event if the abnormal event was sent and unexpired
+		checker.sendRecoveryEventToPVC(logger, pvc)
 	}
-	checker.volumeStateMu.Unlock()
 
 	return nil
 }
 
-func (checker *PVHealthConditionChecker) ClearForDeletedPV(ctx context.Context, pv *v1.PersistentVolume) {
-	claimRef := pv.Spec.ClaimRef
-	if claimRef == nil {
-		return
-	}
-	defer checker.ForgetPVC(claimRef.Namespace, claimRef.Name)
-
-	logger := klog.FromContext(ctx)
-	pvc, err := checker.boundPVC(pv)
+// sendRecoveryEventToPVC sends the recovery event to the pvc
+// If the volume condition is normal and abnormal event wasn't expired,
+// PVHealthConditionChecker should send recovery event.
+func (checker *PVHealthConditionChecker) sendRecoveryEventToPVC(logger klog.Logger, pvc *v1.PersistentVolumeClaim) {
+	pvcUID := string(pvc.ObjectMeta.GetUID())
+	key := fmt.Sprintf("%s:%s:%s", pvcUID, v1.EventTypeWarning, "VolumeConditionAbnormal")
+	events, err := checker.eventInformer.Informer().GetIndexer().ByIndex(util.DefaultEventIndexerName, key)
 	if err != nil {
-		logger.V(4).Info("Not clearing health status for deleted PV", "pv", pv.Name, "err", err)
-		return
+		logger.Info("Get abnormal event from indexer failed", "err", err)
 	}
-	if len(checker.currentHealthConditions(claimRef.Namespace+"/"+claimRef.Name, pvc)) == 0 {
-		return
-	}
-	if _, err := checker.patchPVCHealthStatus(ctx, pvc, nil); err != nil {
-		logger.Error(err, "Failed to clear health status of PVC whose PV was deleted", "pvc", klog.KObj(pvc), "pv", pv.Name)
-		return
-	}
-	logger.V(2).Info("Cleared health status of PVC whose PV was deleted", "pvc", klog.KObj(pvc), "pv", pv.Name)
-}
 
-// ForgetPVC drops the state held for a PVC once it or its PV is deleted.
-func (checker *PVHealthConditionChecker) ForgetPVC(namespace, name string) {
-	checker.volumeStateMu.Lock()
-	delete(checker.volumes, namespace+"/"+name)
-	checker.volumeStateMu.Unlock()
-
-	if checker.metrics != nil {
-		checker.metrics.ClearVolumeHealth(namespace, name)
+	if len(events) > 0 {
+		checker.eventRecorder.Event(pvc, v1.EventTypeNormal, "VolumeConditionNormal", util.DefaultRecoveryEventMessage)
 	}
-}
-
-func (checker *PVHealthConditionChecker) needsAbsentVolumeConfirmation(pvc *v1.PersistentVolumeClaim) bool {
-	pvcKey := pvc.Namespace + "/" + pvc.Name
-
-	checker.volumeStateMu.Lock()
-	state, ok := checker.volumes[pvcKey]
-	checker.volumeStateMu.Unlock()
-
-	if ok && state.unhealthy {
-		return true
-	}
-	if ok && state.pending != nil && state.pending.resourceVersion == pvc.ResourceVersion {
-		return len(state.pending.conditions) > 0
-	}
-	return len(pvcHealthConditions(pvc)) > 0
-}
-
-func (checker *PVHealthConditionChecker) currentHealthConditions(pvcKey string, pvc *v1.PersistentVolumeClaim) []v1.VolumeHealthCondition {
-	current := pvcHealthConditions(pvc)
-
-	checker.volumeStateMu.Lock()
-	defer checker.volumeStateMu.Unlock()
-	state, ok := checker.volumes[pvcKey]
-	if !ok || state.pending == nil {
-		return current
-	}
-	if state.pending.resourceVersion != pvc.ResourceVersion {
-		// The informer caught up; PVC status takes over as the baseline again.
-		state.pending = nil
-		if state.unhealthy {
-			checker.volumes[pvcKey] = state
-		} else {
-			delete(checker.volumes, pvcKey)
-		}
-		return current
-	}
-	return state.pending.conditions
-}
-
-// Safe when metrics is nil.
-func (checker *PVHealthConditionChecker) observeProbe(method string, start time.Time, err error) {
-	if checker.metrics == nil {
-		return
-	}
-	checker.metrics.ObserveProbe(method, time.Since(start).Seconds(), err)
-}
-
-// Safe when metrics is nil.
-func (checker *PVHealthConditionChecker) recordDroppedStatusWrite() {
-	if checker.metrics == nil {
-		return
-	}
-	checker.metrics.RecordDroppedStatusWrite()
-}
-
-// The CSI spec forbids acting on unrecognized error types, and the status enum
-// cannot represent them, so they are surfaced as a PVC warning event instead.
-func (checker *PVHealthConditionChecker) surfaceUnknownConditions(ctx context.Context, pvc *v1.PersistentVolumeClaim, unknown []UnknownCondition) {
-	if len(unknown) == 0 {
-		return
-	}
-	details := unknownConditionsDetails(unknown)
-	klog.FromContext(ctx).Info("CSI driver reported volume health conditions of a type unknown to this monitor", "pvc", klog.KObj(pvc), "conditions", details)
-	if checker.metrics != nil {
-		for _, u := range unknown {
-			checker.metrics.RecordUnknownCondition(u.Status)
-		}
-	}
-	if checker.eventRecorder == nil {
-		return
-	}
-	checker.eventRecorder.Event(pvc, v1.EventTypeWarning, eventReasonUnknownHealthCondition,
-		"The CSI driver reported volume health conditions of a type unknown to this monitor: "+details)
-}
-
-// Deterministic (sorted) so the event correlator can aggregate repeats.
-func unknownConditionsDetails(unknown []UnknownCondition) string {
-	entries := make([]string, 0, len(unknown))
-	for _, u := range unknown {
-		e := u.Status
-		if u.Reason != "" {
-			e += " (reason: " + u.Reason + ")"
-		}
-		if u.Message != "" {
-			e += ": " + u.Message
-		}
-		entries = append(entries, e)
-	}
-	sort.Strings(entries)
-	return strings.Join(entries, "; ")
-}
-
-// One gauge series per status while unhealthy; all removed on recovery. Safe when
-// metrics is nil.
-func (checker *PVHealthConditionChecker) updateVolumeHealthGauge(namespace, name string, desired []v1.VolumeHealthCondition) {
-	if checker.metrics == nil {
-		return
-	}
-	if len(desired) == 0 {
-		checker.metrics.ClearVolumeHealth(namespace, name)
-		return
-	}
-	statuses := make([]string, 0, len(desired))
-	for _, c := range desired {
-		statuses = append(statuses, string(c.Status))
-	}
-	checker.metrics.SetVolumeHealth(namespace, name, statuses)
 }

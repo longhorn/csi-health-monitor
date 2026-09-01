@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //go:build !darwin && !dragonfly && !freebsd && !linux && !netbsd && !openbsd && !solaris && !windows
+// +build !darwin,!dragonfly,!freebsd,!linux,!netbsd,!openbsd,!solaris,!windows
 
-package resource
+package resource // import "go.opentelemetry.io/otel/sdk/resource"
 
 // hostIDReaderUnsupported is a placeholder implementation for operating systems
 // for which this project currently doesn't support host.id
