@@ -20,7 +20,11 @@ import (
 	"context"
 )
 
-type CSIHealthClient interface {
-	ControllerListVolumeHealth(ctx context.Context) (map[string]*VolumeHealthResult, error)
-	ControllerGetVolumeHealth(ctx context.Context, volumeID string) (*VolumeHealthResult, error)
+// CSIHandler is for calling rpc interfaces
+type CSIHandler interface {
+	ControllerListVolumeConditions(ctx context.Context) (map[string]*VolumeConditionResult, error)
+
+	ControllerGetVolumeCondition(ctx context.Context, volumeID string) (*VolumeConditionResult, error)
+
+	NodeGetVolumeCondition(ctx context.Context, volumeID string, volumePath string, volumeStagingPath string) (*VolumeConditionResult, error)
 }
