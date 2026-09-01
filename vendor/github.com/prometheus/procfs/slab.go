@@ -1,4 +1,4 @@
-// Copyright The Prometheus Authors
+// Copyright 2020 The Prometheus Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -21,7 +21,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/prometheus/procfs/internal/parsers"
+	"github.com/prometheus/procfs/internal/util"
 )
 
 var (
@@ -142,7 +142,7 @@ func (fs FS) SlabInfo() (SlabInfo, error) {
 	// TODO: Consider passing options to allow for parsing different
 	// slabinfo versions. However, slabinfo 2.1 has been stable since
 	// kernel 2.6.10 and later.
-	data, err := parsers.ReadFileNoStat(fs.proc.Path("slabinfo"))
+	data, err := util.ReadFileNoStat(fs.proc.Path("slabinfo"))
 	if err != nil {
 		return SlabInfo{}, err
 	}
