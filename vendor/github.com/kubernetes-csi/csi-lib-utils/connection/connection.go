@@ -183,10 +183,10 @@ func connect(
 	if o.metricsManager != nil {
 		interceptors = append(interceptors, ExtendedCSIMetricsManager{o.metricsManager}.RecordMetricsClientInterceptor)
 	}
-	dialOptions = append(dialOptions, grpc.WithChainUnaryInterceptor(interceptors...))
 	if o.enableOtelTracing {
-		dialOptions = append(dialOptions, grpc.WithStatsHandler(otelgrpc.NewClientHandler()))
+		interceptors = append(interceptors, otelgrpc.UnaryClientInterceptor())
 	}
+	dialOptions = append(dialOptions, grpc.WithChainUnaryInterceptor(interceptors...))
 
 	unixPrefix := "unix://"
 	if strings.HasPrefix(address, "/") {
