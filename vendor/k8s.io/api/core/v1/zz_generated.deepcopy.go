@@ -3377,6 +3377,11 @@ func (in *NodeSystemInfo) DeepCopyInto(out *NodeSystemInfo) {
 		*out = new(NodeSwapStatus)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.RunningInUserNamespace != nil {
+		in, out := &in.RunningInUserNamespace, &out.RunningInUserNamespace
+		*out = new(bool)
+		**out = **in
+	}
 	return
 }
 
@@ -6799,6 +6804,11 @@ func (in *VolumeMount) DeepCopyInto(out *VolumeMount) {
 		in, out := &in.MountPropagation, &out.MountPropagation
 		*out = new(MountPropagationMode)
 		**out = **in
+	}
+	if in.BindMountOptions != nil {
+		in, out := &in.BindMountOptions, &out.BindMountOptions
+		*out = make([]string, len(*in))
+		copy(*out, *in)
 	}
 	return
 }
