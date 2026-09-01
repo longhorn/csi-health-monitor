@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-package codes
+package codes // import "go.opentelemetry.io/otel/codes"
 
 import (
 	"encoding/json"
@@ -67,7 +67,7 @@ func (c *Code) UnmarshalJSON(b []byte) error {
 		return errors.New("nil receiver passed to UnmarshalJSON")
 	}
 
-	var x any
+	var x interface{}
 	if err := json.Unmarshal(b, &x); err != nil {
 		return err
 	}
@@ -81,7 +81,7 @@ func (c *Code) UnmarshalJSON(b []byte) error {
 	case float64:
 		if ci, err := strconv.ParseUint(string(b), 10, 32); err == nil {
 			if ci >= maxCode {
-				return fmt.Errorf("invalid code: %d", ci)
+				return fmt.Errorf("invalid code: %q", ci)
 			}
 
 			*c = Code(ci) // nolint: gosec  // Bit size of 32 check above.
@@ -102,5 +102,5 @@ func (c *Code) MarshalJSON() ([]byte, error) {
 	if !ok {
 		return nil, fmt.Errorf("invalid code: %d", *c)
 	}
-	return fmt.Appendf(nil, "%q", str), nil
+	return []byte(fmt.Sprintf("%q", str)), nil
 }
