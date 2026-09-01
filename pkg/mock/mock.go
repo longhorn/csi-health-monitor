@@ -2,6 +2,11 @@ package mock
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -12,40 +17,40 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
+	"github.com/golang/mock/gomock"
 	"github.com/kubernetes-csi/csi-lib-utils/connection"
 	"github.com/kubernetes-csi/csi-lib-utils/metrics"
+	"github.com/kubernetes-csi/csi-test/v5/driver"
+	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc"
 )
 
 var (
-	DefaultNS       = "test"
-	DriverName      = "fake.csi.driver.io"
-	BlockVolumeMode = v1.PersistentVolumeBlock
+	DefaultNS          = "test"
+	DriverName         = "fake.csi.driver.io"
+	DefaultKubeletPath = "/var/lib/kubelet"
+	FSVolumeMode       = v1.PersistentVolumeBlock
+	AbnormalEvent      = "Warning VolumeConditionAbnormal Volume not found"
+	NormalEvent        = "Normal VolumeConditionNormal The Volume returns to the healthy state"
+	ErrorWatchTimeout  = errors.New("watch event timeout")
 )
 
 type CSIVolume struct {
-	Volume *csi.Volume
-	Health *csi.VolumeHealth
+	Volume    *csi.Volume
+	Condition *csi.VolumeCondition
+	IsBlock   bool
 }
 
-func AbnormalVolumeHealth(volumeID string) *csi.VolumeHealth {
-	return &csi.VolumeHealth{
-		VolumeId: volumeID,
-		HealthStatuses: []*csi.VolumeHealth_VolumeHealthEntry{
-			{
-				Status:  csi.VolumeHealthErrorType_INACCESSIBLE,
-				Reason:  "VolumeNotFound",
-				Message: "Volume not found",
-			},
-		},
-	}
+type MockNode struct {
+	NativeNode *v1.Node
 }
 
-func HealthyVolumeHealth(volumeID string) *csi.VolumeHealth {
-	return &csi.VolumeHealth{
-		VolumeId:       volumeID,
-		HealthStatuses: nil,
-	}
+type MockPod struct {
+	NativePod *v1.Pod
+}
+
+type MockEvent struct {
+	NativeEvent *v1.Event
 }
 
 type MockVolume struct {
@@ -73,6 +78,73 @@ func New(ctx context.Context, address string) (*grpc.ClientConn, error) {
 	}
 
 	return conn, nil
+}
+
+func createMockServer(t *testing.T, tmpdir string) (*gomock.Controller,
+	*driver.MockCSIDriver,
+	*driver.MockIdentityServer,
+	*driver.MockControllerServer,
+	*driver.MockNodeServer,
+	*grpc.ClientConn, error) {
+	// Start the mock server
+	mockController := gomock.NewController(t)
+	controllerServer := driver.NewMockControllerServer(mockController)
+	identityServer := driver.NewMockIdentityServer(mockController)
+	nodeServer := driver.NewMockNodeServer(mockController)
+	defer mockController.Finish()
+	drv := driver.NewMockCSIDriver(&driver.MockCSIDriverServers{
+		Identity:   identityServer,
+		Controller: controllerServer,
+		Node:       nodeServer,
+	})
+	drv.StartOnAddress("unix", filepath.Join(tmpdir, "csi.sock"))
+
+	// Create a client connection to it
+	addr := drv.Address()
+	csiConn, err := New(context.Background(), addr)
+	assert.Nil(t, err)
+
+	return mockController, drv, identityServer, controllerServer, nodeServer, csiConn, nil
+}
+
+func tempDir(t *testing.T) string {
+	assert := assert.New(t)
+	dir, err := os.MkdirTemp("", "external-provisioner-test")
+	assert.Nil(err)
+	return dir
+}
+
+func createNode(name, namespace string) *v1.Node {
+	return &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+	}
+}
+
+func createPod(name, namespace, volumeName, pvcName, nodeName, uid string, pvcReadOnly bool) *v1.Pod {
+	return &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			UID:       types.UID(uid),
+		},
+		Spec: v1.PodSpec{
+			NodeName: nodeName,
+			Volumes: []v1.Volume{
+				{
+					Name: volumeName,
+					VolumeSource: v1.VolumeSource{
+						PersistentVolumeClaim: &v1.PersistentVolumeClaimVolumeSource{
+							ClaimName: pvcName,
+							ReadOnly:  pvcReadOnly,
+						},
+					},
+				},
+			},
+		},
+	}
 }
 
 func createPVC(requestGB, capacityGB int, name, uid, namespace, volumeName string, volumePhase v1.PersistentVolumeClaimPhase) *v1.PersistentVolumeClaim {
@@ -136,6 +208,20 @@ func createPV(capacityGB int, pvcName, name, pvcNamespace string, pvcUID types.U
 	return pv
 }
 
+func createEvent(name, namespace, uid, eventType, eventReason string) *v1.Event {
+	return &v1.Event{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		InvolvedObject: v1.ObjectReference{
+			UID: types.UID(uid),
+		},
+		Type:   eventType,
+		Reason: eventReason,
+	}
+}
+
 func CreatePVWithoutCSIDriver(capacityGB int, pvcName, name, pvcNamespace string, pvcUID types.UID, volumeId string, volumePhase v1.PersistentVolumePhase, volumeMode *v1.PersistentVolumeMode) *v1.PersistentVolume {
 	pv := createPV(capacityGB, pvcName, name, pvcNamespace, pvcUID, volumeId, volumePhase, volumeMode)
 	pv.Spec.CSI = nil
@@ -148,10 +234,40 @@ func CreatePVWithNilVolumeHandle(capacityGB int, pvcName, name, pvcNamespace str
 	return pv
 }
 
+func CreateMockServer(t *testing.T) (*gomock.Controller,
+	*driver.MockCSIDriver,
+	*driver.MockIdentityServer,
+	*driver.MockControllerServer,
+	*driver.MockNodeServer,
+	*grpc.ClientConn, error) {
+	return createMockServer(t, tempDir(t))
+}
+
 func CreatePVC(requestGB, capacityGB int, name, uid, namespace, volumeName string, volumePhase v1.PersistentVolumeClaimPhase) *v1.PersistentVolumeClaim {
 	return createPVC(requestGB, capacityGB, name, uid, namespace, volumeName, volumePhase)
 }
 
 func CreatePV(capacityGB int, pvcName, name, pvcNamespace, volumeId string, pvcUID types.UID, volumeMode *v1.PersistentVolumeMode, volumePhase v1.PersistentVolumePhase) *v1.PersistentVolume {
 	return createPV(capacityGB, pvcName, name, pvcNamespace, pvcUID, volumeId, volumePhase, volumeMode)
+}
+
+func CreateNode(name, namespace string) *v1.Node {
+	return createNode(name, namespace)
+}
+
+func CreatePod(name, namespace, volumeName, pvcName, nodeName, uid string, pvcReadOnly bool) *v1.Pod {
+	return createPod(name, namespace, volumeName, pvcName, nodeName, uid, pvcReadOnly)
+}
+
+func CreateEvent(name, namespace, uid, eventType, eventReason string) *v1.Event {
+	return createEvent(name, namespace, uid, eventType, eventReason)
+}
+
+func WatchEvent(want bool, eventChan <-chan string) (string, error) {
+	select {
+	case event := <-eventChan:
+		return event, nil
+	case <-time.After(5 * time.Second):
+		return "", ErrorWatchTimeout
+	}
 }
