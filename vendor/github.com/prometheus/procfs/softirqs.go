@@ -1,4 +1,4 @@
-// Copyright The Prometheus Authors
+// Copyright 2022 The Prometheus Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -21,7 +21,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/prometheus/procfs/internal/parsers"
+	"github.com/prometheus/procfs/internal/util"
 )
 
 // Softirqs represents the softirq statistics.
@@ -40,7 +40,7 @@ type Softirqs struct {
 
 func (fs FS) Softirqs() (Softirqs, error) {
 	fileName := fs.proc.Path("softirqs")
-	data, err := parsers.ReadFileNoStat(fileName)
+	data, err := util.ReadFileNoStat(fileName)
 	if err != nil {
 		return Softirqs{}, err
 	}

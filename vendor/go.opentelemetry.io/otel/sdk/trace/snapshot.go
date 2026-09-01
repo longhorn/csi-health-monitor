@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-package trace
+package trace // import "go.opentelemetry.io/otel/sdk/trace"
 
 import (
 	"time"
@@ -35,7 +35,7 @@ type snapshot struct {
 
 var _ ReadOnlySpan = snapshot{}
 
-func (snapshot) private() {}
+func (s snapshot) private() {}
 
 // Name returns the name of the span.
 func (s snapshot) Name() string {

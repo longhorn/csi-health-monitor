@@ -1,4 +1,4 @@
-// Copyright The Prometheus Authors
+// Copyright 2022 The Prometheus Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -21,7 +21,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/prometheus/procfs/internal/parsers"
+	"github.com/prometheus/procfs/internal/util"
 )
 
 // ProcSnmp models the content of /proc/<pid>/net/snmp.
@@ -135,7 +135,7 @@ type UdpLite struct { // nolint:revive
 
 func (p Proc) Snmp() (ProcSnmp, error) {
 	filename := p.path("net/snmp")
-	data, err := parsers.ReadFileNoStat(filename)
+	data, err := util.ReadFileNoStat(filename)
 	if err != nil {
 		return ProcSnmp{PID: p.PID}, err
 	}
