@@ -1,4 +1,4 @@
-// Copyright The Prometheus Authors
+// Copyright 2019 The Prometheus Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -21,7 +21,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/prometheus/procfs/internal/parsers"
+	"github.com/prometheus/procfs/internal/util"
 )
 
 // For the proc file format details,
@@ -57,7 +57,7 @@ var softNetProcFile = "net/softnet_stat"
 
 // NetSoftnetStat reads data from /proc/net/softnet_stat.
 func (fs FS) NetSoftnetStat() ([]SoftnetStat, error) {
-	b, err := parsers.ReadFileNoStat(fs.proc.Path(softNetProcFile))
+	b, err := util.ReadFileNoStat(fs.proc.Path(softNetProcFile))
 	if err != nil {
 		return nil, err
 	}
