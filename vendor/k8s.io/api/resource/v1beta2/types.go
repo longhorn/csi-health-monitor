@@ -213,7 +213,43 @@ type ResourceSliceSpec struct {
 	// +k8s:ifEnabled(DRAPartitionableDevicesType)=+k8s:optional
 	// +k8s:ifEnabled(DRAPartitionableDevicesType)=+k8s:format=k8s-resource-fully-qualified-name
 	PartitionTypeAttribute *FullyQualifiedName `json:"partitionTypeAttribute,omitempty" protobuf:"bytes,9,opt,name=partitionTypeAttribute"`
+
+	// SkipNodeOperations lists node-local resource operations (gRPC calls)
+	// that will be skipped for the devices in this slice when determining whether
+	// operations are necessary on the node. If all allocated devices for a driver in
+	// a claim skip an operation, that gRPC call will be skipped. Valid values are:
+	//
+	// - "NodePrepareResources": NodePrepareResources gRPC calls are skipped. This
+	//   value cannot be specified unless "NodeUnprepareResources" is also listed
+	//   (or "*" is specified).
+	// - "NodeUnprepareResources": NodeUnprepareResources gRPC calls are skipped.
+	// - "*": All node-local resource operations are skipped.
+	//
+	// Other values may be added in the future. The kubelet must ignore unknown
+	// values.
+	//
+	// +optional
+	// +listType=set
+	// +k8s:listType=set
+	// +featureGate=DRAOptionalNodeOperations
+	// +k8s:optional
+	SkipNodeOperations []SkipNodeOperation `json:"skipNodeOperations,omitempty" protobuf:"bytes,10,rep,name=skipNodeOperations,casttype=SkipNodeOperation"`
 }
+
+// +enum
+// +k8s:enum
+type SkipNodeOperation string
+
+const (
+	// SkipNodeOperationNodePrepareResources indicates that NodePrepareResources gRPC calls are skipped.
+	SkipNodeOperationNodePrepareResources SkipNodeOperation = "NodePrepareResources"
+
+	// SkipNodeOperationNodeUnprepareResources indicates that NodeUnprepareResources gRPC calls are skipped.
+	SkipNodeOperationNodeUnprepareResources SkipNodeOperation = "NodeUnprepareResources"
+
+	// SkipNodeOperationAll indicates that all node-local resource operations are skipped.
+	SkipNodeOperationAll SkipNodeOperation = "*"
+)
 
 // CounterSet defines a named set of counters
 // that are available to be used by devices defined in the
@@ -316,6 +352,10 @@ const ResourceSliceMaxDeviceCounterConsumptionsPerDevice = 2
 // Defines the maximum number of counters that can be defined
 // per device counter consumption.
 const ResourceSliceMaxCountersPerDeviceCounterConsumption = 32
+
+// Defines the maximum number of compatibility groups that can be
+// declared per device counter consumption.
+const DeviceCompatibilityGroupsMaxSize = 2
 
 // Device represents one individual hardware instance that can be selected based
 // on its attributes. Besides the name, exactly one field must be set.
@@ -601,6 +641,36 @@ type DeviceCounterConsumption struct {
 	// +k8s:beta(since: "1.37")=+k8s:required
 	// +k8s:beta(since: "1.37")=+k8s:eachKey=+k8s:format=k8s-short-name
 	Counters map[string]Counter `json:"counters,omitempty" protobuf:"bytes,2,opt,name=counters"`
+
+	// CompatibilityGroups is a list of opaque group names for
+	// this counter set consumption.
+	//
+	// Devices that consume counters from the same counter set may only be
+	// allocated at the same time ("co-allocated") if they all share at least
+	// one common group: the intersection of the CompatibilityGroups of all
+	// co-allocated devices on that counter set must be non-empty. Devices
+	// that consume from different counter sets are never compared via this
+	// field.
+	//
+	// An unset field, an explicit nil, and an empty list are equivalent and
+	// mean "no groups": such a device is only co-allocatable with sibling
+	// devices on the same counter set that also have no groups, and is never
+	// co-allocatable with a device that declares one or more groups.
+	//
+	// Group names are opaque and meaningful only within the
+	// publishing driver's pool.
+	//
+	// The maximum number of groups is 2, and the names must be unique.
+	//
+	// +optional
+	// +listType=atomic
+	// +featureGate=DRADeviceCompatibilityGroups
+	// +k8s:listType=atomic
+	// +k8s:optional
+	// +k8s:maxItems=2
+	// +k8s:unique=set
+	// +k8s:eachVal=+k8s:format=k8s-short-name
+	CompatibilityGroups []string `json:"compatibilityGroups,omitempty" protobuf:"bytes,3,rep,name=compatibilityGroups"`
 }
 
 // DeviceCapacity describes a quantity associated with a device.
@@ -1366,6 +1436,34 @@ type ExactDeviceRequest struct {
 	// +optional
 	// +featureGate=DRAConsumableCapacity
 	Capacity *CapacityRequirements `json:"capacity,omitempty" protobuf:"bytes,7,opt,name=capacity"`
+
+	// DerivedAttributes defines a set of virtual attributes computed via CEL expressions
+	// for each candidate device. These virtual attributes can be referenced in
+	// `.devices.constraints` to align and match different devices (e.g., co-allocating
+	// a GPU and a NIC on the same NUMA node) even if their drivers publish different
+	// attributes. Derived attributes are not available via `device.attributes`
+	// in the CEL environment when evaluating selector expressions.
+	//
+	// Derived attributes allow you to extract, transform, or normalize topology
+	// information (such as extracting a NUMA index from a complex topology string or
+	// renaming a vendor-specific attribute) into a common virtual attribute name at
+	// scheduling time. The scheduler then evaluates these virtual attributes exactly
+	// like static attributes when matching constraints.
+	//
+	// Every derived attribute defined in this list must be referenced by at least one
+	// MatchAttribute or DistinctAttribute constraint in the `.devices.constraints` list.
+	//
+	// The maximum number of derived attributes is 32.
+	//
+	// This is an alpha field and requires enabling the DRADerivedAttributes
+	// feature gate.
+	//
+	// +optional
+	// +listType=atomic
+	// +featureGate=DRADerivedAttributes
+	// +k8s:optional
+	// +k8s:maxItems=32
+	DerivedAttributes []DeviceDerivedAttribute `json:"derivedAttributes,omitempty" protobuf:"bytes,8,rep,name=derivedAttributes"`
 }
 
 // DeviceSubRequest describes a request for device provided in the
@@ -1483,6 +1581,34 @@ type DeviceSubRequest struct {
 	// +optional
 	// +featureGate=DRAConsumableCapacity
 	Capacity *CapacityRequirements `json:"capacity,omitempty" protobuf:"bytes,7,opt,name=capacity"`
+
+	// DerivedAttributes defines a set of virtual attributes computed via CEL expressions
+	// for each candidate device. These virtual attributes can be referenced in
+	// `.devices.constraints` to align and match different devices (e.g., co-allocating
+	// a GPU and a NIC on the same NUMA node) even if their drivers publish different
+	// attributes. Derived attributes are not available via `device.attributes`
+	// in the CEL environment when evaluating selector expressions.
+	//
+	// Derived attributes allow you to extract, transform, or normalize topology
+	// information (such as extracting a NUMA index from a complex topology string or
+	// renaming a vendor-specific attribute) into a common virtual attribute name at
+	// scheduling time. The scheduler then evaluates these virtual attributes exactly
+	// like static attributes when matching constraints.
+	//
+	// Every derived attribute defined in this list must be referenced by at least one
+	// MatchAttribute or DistinctAttribute constraint in the `.devices.constraints` list.
+	//
+	// The maximum number of derived attributes is 32.
+	//
+	// This is an alpha field and requires enabling the DRADerivedAttributes
+	// feature gate.
+	//
+	// +optional
+	// +listType=atomic
+	// +featureGate=DRADerivedAttributes
+	// +k8s:optional
+	// +k8s:maxItems=32
+	DerivedAttributes []DeviceDerivedAttribute `json:"derivedAttributes,omitempty" protobuf:"bytes,8,rep,name=derivedAttributes"`
 }
 
 // CapacityRequirements defines the capacity requirements for a specific device request.
@@ -1514,10 +1640,66 @@ type CapacityRequirements struct {
 	Requests map[QualifiedName]resource.Quantity `json:"requests,omitempty" protobuf:"bytes,1,rep,name=requests,castkey=QualifiedName"`
 }
 
+// DeviceDerivedAttribute defines a derived attribute computed via CEL.
+type DeviceDerivedAttribute struct {
+	// Name is the identifier for this derived attribute, used in constraints.
+	//
+	// It must be a DNS subdomain followed by a slash ("/") followed by a C identifier
+	// (e.g. "example.com/numaNode" or "derived/numaNode").
+	//
+	// If the chosen name matches an existing physical attribute from a driver,
+	// the derived attribute's expression will shadow the physical attribute,
+	// and its evaluated value will be used in constraints instead. When the goal
+	// is to define a derived attribute that is only used within the ResourceClaim
+	// and not meant to shadow an existing attribute, use a domain prefix that
+	// no DRA driver should be using (e.g. "derived/myAttribute").
+	//
+	// It is not valid to define a derived attribute that isn't used in at least
+	// one constraint.
+	//
+	// +required
+	// +k8s:required
+	// +k8s:format=k8s-resource-fully-qualified-name
+	Name FullyQualifiedName `json:"name" protobuf:"bytes,1,name=name"`
+
+	// Expression is a CEL expression evaluated against each candidate device.
+	// The expression must evaluate to a primitive scalar (string, integer,
+	// boolean, or semver) or a list of these scalars ([]string, []int64,
+	// []bool, []semver) to act as a virtual grouping key. Any other return type
+	// is an error and causes CEL evaluation for the device to fail.
+	//
+	// The expression's input is an object named "device", which carries the
+	// same properties as in a CELDeviceSelector.
+	//
+	// When pod scheduling encounters CEL runtime errors (such as looking
+	// up an attribute that isn't defined) for some devices, it will abort
+	// allocation and fail scheduling for the Pod. Surfacing evaluation
+	// errors immediately prevents silent topology matching failures that are
+	// extremely hard to detect. A robust expression should, for example, check
+	// for the existence of attributes before referencing them to avoid
+	// runtime evaluation errors.
+	//
+	// The expression gets evaluated after a device has passed the other
+	// selector expressions for the request in which this expression is used.
+	// This allows writing expressions that are tailored towards the specific
+	// devices being requested (for example, by assuming the device is from a
+	// certain vendor and skipping those checks).
+	//
+	// The length of the expression must be smaller or equal to 10 Ki. The
+	// cost of evaluating it is also limited based on the estimated number
+	// of logical steps; the combined cost of all derived attributes in a
+	// claim is capped by a shared CEL cost budget.
+	//
+	// +required
+	// +k8s:required
+	Expression string `json:"expression" protobuf:"bytes,2,name=expression"`
+}
+
 const (
 	DeviceSelectorsMaxSize             = 32
 	FirstAvailableDeviceRequestMaxSize = 8
 	DeviceTolerationsMaxLength         = 16
+	DeviceDerivedAttributesMaxSize     = 32
 )
 
 // +enum
@@ -1640,6 +1822,25 @@ type CELDeviceSelector struct {
 // However, this depends on how fast the machine is.
 const CELSelectorExpressionMaxCost = 1000000
 
+// DeviceClaimDerivedAttributeCELMaxCost is the maximum combined execution cost
+// allowed for all derived attribute CEL expressions within a single DeviceClaim.
+//
+// During validation, the API server computes the estimated execution cost of each
+// derived attribute expression. The sum of these costs across all requests in the
+// claim must not exceed this budget. If it does, the claim is rejected.
+//
+// To stay within the budget, consumers should simplify their CEL expressions,
+// avoid computationally expensive operations like deep nesting or iterations
+// (such as `.all()` or `.exists()`), and minimize the total number of derived
+// attributes in a claim.
+//
+// This shared budget prevents excessively complex claims from degrading the
+// performance of the kube-scheduler. The limit is set to 1,000,000 instruction
+// executions (roughly 0.1 seconds of evaluation time), tying the collective
+// cost of all derived attributes to the maximum cost allowed for a single
+// CEL selector.
+const DeviceClaimDerivedAttributeCELMaxCost = 1000000
+
 // CELSelectorExpressionMaxLength is the maximum length of a CEL selector expression string.
 const CELSelectorExpressionMaxLength = 10 * 1024
 
@@ -1716,6 +1917,8 @@ type DeviceConstraint struct {
 	// +optional
 	// +oneOf=ConstraintType
 	// +featureGate=DRAConsumableCapacity
+	// +k8s:beta(since: "1.37")=+k8s:optional
+	// +k8s:beta(since: "1.37")=+k8s:format=k8s-resource-fully-qualified-name
 	DistinctAttribute *FullyQualifiedName `json:"distinctAttribute,omitempty" protobuf:"bytes,3,opt,name=distinctAttribute"`
 }
 
@@ -2108,6 +2311,19 @@ type DeviceRequestAllocationResult struct {
 	// +optional
 	// +featureGate=DRAConsumableCapacity
 	ConsumedCapacity map[QualifiedName]resource.Quantity `json:"consumedCapacity,omitempty" protobuf:"bytes,10,rep,name=consumedCapacity"`
+
+	// SkipNodeOperations lists node-local resource operations (gRPC calls)
+	// that will be skipped for this allocated device when determining whether
+	// operations are necessary on the node. If all allocated devices for a driver in
+	// a claim skip an operation, that gRPC call will be skipped. It is a copy of
+	// the ResourceSlice.spec.skipNodeOperations value at the time when the device was allocated.
+	//
+	// +optional
+	// +listType=set
+	// +k8s:listType=set
+	// +featureGate=DRAOptionalNodeOperations
+	// +k8s:optional
+	SkipNodeOperations []SkipNodeOperation `json:"skipNodeOperations,omitempty" protobuf:"bytes,11,rep,name=skipNodeOperations,casttype=SkipNodeOperation"`
 }
 
 // DeviceAllocationConfiguration gets embedded in an AllocationResult.

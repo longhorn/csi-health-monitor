@@ -7478,6 +7478,16 @@ func (m *NodeSystemInfo) MarshalToSizedBuffer(dAtA []byte) (int, error) {
 	_ = i
 	var l int
 	_ = l
+	if m.RunningInUserNamespace != nil {
+		i--
+		if *m.RunningInUserNamespace {
+			dAtA[i] = 1
+		} else {
+			dAtA[i] = 0
+		}
+		i--
+		dAtA[i] = 0x60
+	}
 	if m.Swap != nil {
 		{
 			size, err := m.Swap.MarshalToSizedBuffer(dAtA[:i])
@@ -14619,6 +14629,15 @@ func (m *VolumeMount) MarshalToSizedBuffer(dAtA []byte) (int, error) {
 	_ = i
 	var l int
 	_ = l
+	if len(m.BindMountOptions) > 0 {
+		for iNdEx := len(m.BindMountOptions) - 1; iNdEx >= 0; iNdEx-- {
+			i -= len(m.BindMountOptions[iNdEx])
+			copy(dAtA[i:], m.BindMountOptions[iNdEx])
+			i = encodeVarintGenerated(dAtA, i, uint64(len(m.BindMountOptions[iNdEx])))
+			i--
+			dAtA[i] = 0x42
+		}
+	}
 	if m.RecursiveReadOnly != nil {
 		i -= len(*m.RecursiveReadOnly)
 		copy(dAtA[i:], *m.RecursiveReadOnly)
@@ -18150,6 +18169,9 @@ func (m *NodeSystemInfo) Size() (n int) {
 		l = m.Swap.Size()
 		n += 1 + l + sovGenerated(uint64(l))
 	}
+	if m.RunningInUserNamespace != nil {
+		n += 2
+	}
 	return n
 }
 
@@ -20789,6 +20811,12 @@ func (m *VolumeMount) Size() (n int) {
 		l = len(*m.RecursiveReadOnly)
 		n += 1 + l + sovGenerated(uint64(l))
 	}
+	if len(m.BindMountOptions) > 0 {
+		for _, s := range m.BindMountOptions {
+			l = len(s)
+			n += 1 + l + sovGenerated(uint64(l))
+		}
+	}
 	return n
 }
 
@@ -23074,6 +23102,7 @@ func (this *NodeSystemInfo) String() string {
 		`OperatingSystem:` + fmt.Sprintf("%v", this.OperatingSystem) + `,`,
 		`Architecture:` + fmt.Sprintf("%v", this.Architecture) + `,`,
 		`Swap:` + strings.Replace(this.Swap.String(), "NodeSwapStatus", "NodeSwapStatus", 1) + `,`,
+		`RunningInUserNamespace:` + valueToStringGenerated(this.RunningInUserNamespace) + `,`,
 		`}`,
 	}, "")
 	return s
@@ -25027,6 +25056,7 @@ func (this *VolumeMount) String() string {
 		`MountPropagation:` + valueToStringGenerated(this.MountPropagation) + `,`,
 		`SubPathExpr:` + fmt.Sprintf("%v", this.SubPathExpr) + `,`,
 		`RecursiveReadOnly:` + valueToStringGenerated(this.RecursiveReadOnly) + `,`,
+		`BindMountOptions:` + fmt.Sprintf("%v", this.BindMountOptions) + `,`,
 		`}`,
 	}, "")
 	return s
@@ -47471,6 +47501,27 @@ func (m *NodeSystemInfo) Unmarshal(dAtA []byte) error {
 				return err
 			}
 			iNdEx = postIndex
+		case 12:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field RunningInUserNamespace", wireType)
+			}
+			var v int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowGenerated
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				v |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			b := bool(v != 0)
+			m.RunningInUserNamespace = &b
 		default:
 			iNdEx = preIndex
 			skippy, err := skipGenerated(dAtA[iNdEx:])
@@ -70448,6 +70499,38 @@ func (m *VolumeMount) Unmarshal(dAtA []byte) error {
 			}
 			s := RecursiveReadOnlyMode(dAtA[iNdEx:postIndex])
 			m.RecursiveReadOnly = &s
+			iNdEx = postIndex
+		case 8:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field BindMountOptions", wireType)
+			}
+			var stringLen uint64
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowGenerated
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				stringLen |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			intStringLen := int(stringLen)
+			if intStringLen < 0 {
+				return ErrInvalidLengthGenerated
+			}
+			postIndex := iNdEx + intStringLen
+			if postIndex < 0 {
+				return ErrInvalidLengthGenerated
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.BindMountOptions = append(m.BindMountOptions, string(dAtA[iNdEx:postIndex]))
 			iNdEx = postIndex
 		default:
 			iNdEx = preIndex
